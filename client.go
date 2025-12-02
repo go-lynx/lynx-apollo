@@ -10,9 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/go-lynx/lynx/app/log"
-	"github.com/go-lynx/lynx/plugins/apollo/conf"
 )
 
 // ApolloHTTPClient represents an HTTP client for Apollo configuration center
@@ -38,7 +35,7 @@ type ApolloConfigResponse struct {
 
 // ApolloNotificationResponse represents Apollo notification response
 type ApolloNotificationResponse struct {
-	NamespaceName string `json:"namespaceName"`
+	NamespaceName  string `json:"namespaceName"`
 	NotificationId int64  `json:"notificationId"`
 }
 
@@ -50,10 +47,10 @@ func NewApolloHTTPClient(metaServer, appId, cluster, namespace, token string, ti
 
 	return &ApolloHTTPClient{
 		metaServer: metaServer,
-		appId:     appId,
-		cluster:   cluster,
-		namespace: namespace,
-		token:     token,
+		appId:      appId,
+		cluster:    cluster,
+		namespace:  namespace,
+		token:      token,
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
@@ -72,7 +69,7 @@ func (c *ApolloHTTPClient) getConfigServer(ctx context.Context) (string, error) 
 
 	// Query meta server for config server address
 	metaURL := fmt.Sprintf("%s/services/config?appId=%s&ip=%s", c.metaServer, c.appId, c.getClientIP())
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", metaURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
@@ -264,4 +261,3 @@ func (c *ApolloHTTPClient) Close() {
 	c.configServer = ""
 	c.mu.Unlock()
 }
-

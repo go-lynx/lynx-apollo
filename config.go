@@ -196,14 +196,14 @@ func (p *PlugApollo) getConfigValueFromApollo(namespace, key string) (string, er
 			if value, ok := cached.(string); ok {
 				p.cacheMutex.RUnlock()
 				if p.metrics != nil {
-					p.metrics.RecordCacheHit()
+					p.metrics.RecordCacheHit(p.GetNamespace())
 				}
 				return value, nil
 			}
 		}
 		p.cacheMutex.RUnlock()
 		if p.metrics != nil {
-			p.metrics.RecordCacheMiss()
+			p.metrics.RecordCacheMiss(p.GetNamespace())
 		}
 	}
 
@@ -278,4 +278,3 @@ func (s *ApolloConfigSource) Watch() (config.Watcher, error) {
 	watcher := NewApolloConfigWatcher(client, s.namespace)
 	return watcher, nil
 }
-

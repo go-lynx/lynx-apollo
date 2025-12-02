@@ -1,7 +1,6 @@
 package apollo
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/go-lynx/lynx/app/log"
@@ -13,7 +12,7 @@ func (p *PlugApollo) stopHealthCheck() {
 	p.mu.Lock()
 	ch := p.healthCheckCh
 	p.mu.Unlock()
-	
+
 	if ch != nil {
 		// Use sync.Once to ensure close() is only called once
 		// This prevents panic if stopHealthCheck() is called multiple times
@@ -147,10 +146,10 @@ func (p *PlugApollo) getCleanupStats() map[string]interface{} {
 			"destroyed":   p.IsDestroyed(),
 		},
 		"resources": map[string]interface{}{
-			"client_closed":      p.client == nil,
-			"metrics_cleared":   p.metrics == nil,
-			"retry_cleared":     p.retryManager == nil,
-			"breaker_cleared":   p.circuitBreaker == nil,
+			"client_closed":   p.client == nil,
+			"metrics_cleared": p.metrics == nil,
+			"retry_cleared":   p.retryManager == nil,
+			"breaker_cleared": p.circuitBreaker == nil,
 		},
 	}
 
@@ -201,4 +200,3 @@ func (p *PlugApollo) CleanupTasks() error {
 	log.Infof("Apollo plugin destroyed successfully")
 	return nil
 }
-
