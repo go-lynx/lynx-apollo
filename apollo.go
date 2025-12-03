@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-lynx/lynx/app"
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/apollo/conf"
+	"github.com/go-lynx/lynx-apollo/conf"
 )
 
 // Plugin metadata
@@ -220,7 +220,7 @@ func (p *PlugApollo) StartupTasks() error {
 	p.client = client
 
 	// Set the Apollo configuration center as the Lynx application's control plane.
-	err = app.Lynx().SetControlPlane(p)
+	err = lynx.Lynx().SetControlPlane(p)
 	if err != nil {
 		log.Errorf("Failed to set control plane: %v", err)
 		if p.metrics != nil {
@@ -230,7 +230,7 @@ func (p *PlugApollo) StartupTasks() error {
 	}
 
 	// Get the Lynx application's control plane startup configuration.
-	cfg, err := app.Lynx().InitControlPlaneConfig()
+	cfg, err := lynx.Lynx().InitControlPlaneConfig()
 	if err != nil {
 		log.Errorf("Failed to init control plane config: %v", err)
 		if p.metrics != nil {
@@ -240,7 +240,7 @@ func (p *PlugApollo) StartupTasks() error {
 	}
 
 	// Load plugins from the plugin list.
-	app.Lynx().GetPluginManager().LoadPlugins(cfg)
+	lynx.Lynx().GetPluginManager().LoadPlugins(cfg)
 
 	p.setInitialized()
 	log.Infof("Apollo plugin initialized successfully")

@@ -6,8 +6,8 @@ import (
 	"sort"
 
 	"github.com/go-kratos/kratos/v2/config"
-	"github.com/go-lynx/lynx/app/log"
-	"github.com/go-lynx/lynx/plugins/apollo/conf"
+	"github.com/go-lynx/lynx/log"
+	"github.com/go-lynx/lynx-apollo/conf"
 )
 
 // ConfigAdapter configuration adapter
@@ -245,13 +245,8 @@ func NewApolloConfigSource(client *ApolloHTTPClient, appId, cluster, namespace s
 
 // Load implements config.Source interface
 func (s *ApolloConfigSource) Load() ([]*config.KeyValue, error) {
-	client, ok := s.client.(*ApolloHTTPClient)
-	if !ok {
-		return nil, fmt.Errorf("invalid Apollo client type")
-	}
-
 	ctx := context.Background()
-	configResp, err := client.GetConfig(ctx, s.namespace)
+	configResp, err := s.client.GetConfig(ctx, s.namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config from Apollo: %w", err)
 	}
@@ -269,12 +264,7 @@ func (s *ApolloConfigSource) Load() ([]*config.KeyValue, error) {
 
 // Watch implements config.Source interface
 func (s *ApolloConfigSource) Watch() (config.Watcher, error) {
-	client, ok := s.client.(*ApolloHTTPClient)
-	if !ok {
-		return nil, fmt.Errorf("invalid Apollo client type")
-	}
-
 	// Create a config watcher adapter
-	watcher := NewApolloConfigWatcher(client, s.namespace)
+	watcher := NewApolloConfigWatcher(s.client, s.namespace)
 	return watcher, nil
 }

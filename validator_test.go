@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-lynx/lynx/plugins/apollo/conf"
+	"github.com/go-lynx/lynx-apollo/conf"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/durationpb"
 )

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-lynx/lynx/app/log"
-	"github.com/go-lynx/lynx/plugins/apollo/conf"
+	"github.com/go-lynx/lynx/log"
+	"github.com/go-lynx/lynx-apollo/conf"
 )
 
 // CheckHealth performs a health check.

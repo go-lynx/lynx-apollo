@@ -6,7 +6,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx/log"
 )
 
 // RetryManager retry manager

@@ -1,7 +1,7 @@
 package apollo
 
 import (
-	"github.com/go-lynx/lynx/app/factory"
+	"github.com/go-lynx/lynx/pkg/factory"
 	"github.com/go-lynx/lynx/plugins"
 )
 

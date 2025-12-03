@@ -3,7 +3,7 @@ package apollo
 import (
 	"time"
 
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx/log"
 )
 
 // stopHealthCheck stops health check

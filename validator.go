@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-lynx/lynx/plugins/apollo/conf"
+	"github.com/go-lynx/lynx-apollo/conf"
 )
 
 // ValidationError configuration validation error
