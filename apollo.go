@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx-apollo/conf"
 	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx-apollo/conf"
 )
 
 // Plugin metadata
@@ -43,10 +43,10 @@ type PlugApollo struct {
 	circuitBreaker *CircuitBreaker
 
 	// State management - using atomic operations to improve concurrency safety
-	mu                  sync.RWMutex
-	initialized         int32 // Use int32 instead of bool to support atomic operations
-	destroyed           int32 // Use int32 instead of bool to support atomic operations
-	healthCheckCh       chan struct{}
+	mu                   sync.RWMutex
+	initialized          int32 // Use int32 instead of bool to support atomic operations
+	destroyed            int32 // Use int32 instead of bool to support atomic operations
+	healthCheckCh        chan struct{}
 	healthCheckCloseOnce sync.Once // Protect against multiple close operations
 
 	// Configuration watchers
@@ -316,4 +316,3 @@ func (p *PlugApollo) GetNamespace() string {
 	}
 	return conf.DefaultNamespace
 }
-

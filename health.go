@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx-apollo/conf"
+	"github.com/go-lynx/lynx/log"
 )
 
 // CheckHealth performs a health check.
@@ -107,4 +107,3 @@ func (p *PlugApollo) checkConfigManagementHealth() error {
 
 	return nil
 }
-

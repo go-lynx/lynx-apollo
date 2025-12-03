@@ -6,8 +6,8 @@ import (
 	"sort"
 
 	"github.com/go-kratos/kratos/v2/config"
-	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx-apollo/conf"
+	"github.com/go-lynx/lynx/log"
 )
 
 // ConfigAdapter configuration adapter
