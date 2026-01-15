@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/go-kratos/kratos/v2 v2.9.1
-	github.com/go-lynx/lynx v1.5.0
+	github.com/go-lynx/lynx v1.5.2
 	github.com/prometheus/client_golang v1.23.0
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/protobuf v1.36.10
