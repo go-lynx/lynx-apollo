@@ -33,6 +33,7 @@ const (
 type PlugApollo struct {
 	*plugins.BasePlugin
 	conf *conf.Apollo
+	rt   plugins.Runtime
 
 	// Apollo HTTP client
 	client *ApolloHTTPClient
@@ -84,6 +85,11 @@ func NewApolloConfigCenter() *PlugApollo {
 // InitializeResources implements custom initialization logic for the Apollo plugin.
 // This function loads and validates Apollo configuration, using default configuration if none is provided.
 func (p *PlugApollo) InitializeResources(rt plugins.Runtime) error {
+	if err := p.BasePlugin.InitializeResources(rt); err != nil {
+		return err
+	}
+	p.rt = rt
+
 	// Initialize an empty configuration structure
 	p.conf = &conf.Apollo{}
 
@@ -218,6 +224,40 @@ func (p *PlugApollo) StartupTasks() error {
 
 	// Save client instance
 	p.client = client
+
+	if p.rt != nil {
+		if err := p.rt.RegisterSharedResource(pluginName, p); err != nil {
+			return WrapInitError(err, "failed to register Apollo shared resource")
+		}
+		if err := p.rt.RegisterPrivateResource("client", p.client); err != nil {
+			log.Warnf("failed to register Apollo private client resource: %v", err)
+		}
+		if p.metrics != nil {
+			if err := p.rt.RegisterPrivateResource("metrics", p.metrics); err != nil {
+				log.Warnf("failed to register Apollo private metrics resource: %v", err)
+			}
+		}
+		if p.retryManager != nil {
+			if err := p.rt.RegisterPrivateResource("retry_manager", p.retryManager); err != nil {
+				log.Warnf("failed to register Apollo private retry manager resource: %v", err)
+			}
+		}
+		if p.circuitBreaker != nil {
+			if err := p.rt.RegisterPrivateResource("circuit_breaker", p.circuitBreaker); err != nil {
+				log.Warnf("failed to register Apollo private circuit breaker resource: %v", err)
+			}
+		}
+		if p.configWatchers != nil {
+			if err := p.rt.RegisterPrivateResource("config_watchers", p.configWatchers); err != nil {
+				log.Warnf("failed to register Apollo private config watchers resource: %v", err)
+			}
+		}
+		if p.configCache != nil {
+			if err := p.rt.RegisterPrivateResource("config_cache", p.configCache); err != nil {
+				log.Warnf("failed to register Apollo private config cache resource: %v", err)
+			}
+		}
+	}
 
 	// Set the Apollo configuration center as the Lynx application's control plane.
 	err = lynx.Lynx().SetControlPlane(p)
