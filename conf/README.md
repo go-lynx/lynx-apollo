@@ -14,11 +14,15 @@ This directory contains configuration-related files for the Apollo plugin.
 To regenerate the protobuf Go code, run:
 
 ```bash
-# From project root
+# From the lynx-apollo module root
+make init
 make config
 
 # Or manually
-protoc --proto_path=plugins/apollo/conf -I ./third_party --go_out=paths=source_relative:plugins/apollo/conf plugins/apollo/conf/apollo.proto
+PATH="$(go env GOPATH)/bin:$PATH" \
+protoc --proto_path=./conf -I . -I ../lynx/third_party \
+  --go_out=paths=source_relative:./conf \
+  ./conf/apollo.proto
 ```
 
 ## Configuration Structure
@@ -32,4 +36,4 @@ The Apollo plugin configuration is defined in `apollo.proto` and includes:
 - Service configuration for multi-namespace loading
 
 See `example_config.yml` for a complete configuration example.
-
+See [`../VALIDATION.md`](../VALIDATION.md) for the current automated test baseline.

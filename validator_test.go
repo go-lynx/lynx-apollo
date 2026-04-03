@@ -32,7 +32,7 @@ func TestValidator_Validate(t *testing.T) {
 			name: "valid basic config",
 			config: &conf.Apollo{
 				AppId:      "test-app",
-				MetaServer: "http://localhost:8080",
+				MetaServer: "https://localhost:8080",
 			},
 			wantErr: false,
 		},
@@ -62,7 +62,7 @@ func TestValidator_Validate(t *testing.T) {
 			name: "invalid - invalid meta_server URL",
 			config: &conf.Apollo{
 				AppId:      "test-app",
-				MetaServer: "invalid-url",
+				MetaServer: "://invalid-url",
 			},
 			wantErr: true,
 		},
@@ -78,8 +78,8 @@ func TestValidator_Validate(t *testing.T) {
 		{
 			name: "invalid - max_retry_times out of range",
 			config: &conf.Apollo{
-				AppId:        "test-app",
-				MetaServer:   "http://localhost:8080",
+				AppId:         "test-app",
+				MetaServer:    "http://localhost:8080",
 				MaxRetryTimes: 100,
 			},
 			wantErr: true,
@@ -87,8 +87,8 @@ func TestValidator_Validate(t *testing.T) {
 		{
 			name: "invalid - circuit_breaker_threshold out of range",
 			config: &conf.Apollo{
-				AppId:                 "test-app",
-				MetaServer:            "http://localhost:8080",
+				AppId:                   "test-app",
+				MetaServer:              "http://localhost:8080",
 				CircuitBreakerThreshold: 2.0,
 			},
 			wantErr: true,
@@ -123,9 +123,9 @@ func TestValidator_Validate(t *testing.T) {
 		{
 			name: "invalid - timeout >= notification_timeout",
 			config: &conf.Apollo{
-				AppId:             "test-app",
-				MetaServer:        "http://localhost:8080",
-				Timeout:           durationpb.New(30 * time.Second),
+				AppId:               "test-app",
+				MetaServer:          "http://localhost:8080",
+				Timeout:             durationpb.New(30 * time.Second),
 				NotificationTimeout: durationpb.New(10 * time.Second),
 			},
 			wantErr: true,
@@ -143,18 +143,18 @@ func TestValidator_Validate(t *testing.T) {
 		{
 			name: "valid - with all optional fields",
 			config: &conf.Apollo{
-				AppId:             "test-app",
-				MetaServer:        "http://localhost:8080",
-				Cluster:           "default",
-				Namespace:         "application",
-				Token:             "valid-token-123",
-				Timeout:           durationpb.New(10 * time.Second),
-				NotificationTimeout: durationpb.New(30 * time.Second),
-				EnableCache:        true,
-				CacheDir:           "/tmp/cache",
-				MaxRetryTimes:      3,
+				AppId:                   "test-app",
+				MetaServer:              "https://localhost:8080",
+				Cluster:                 "default",
+				Namespace:               "application",
+				Token:                   "valid-token-123",
+				Timeout:                 durationpb.New(10 * time.Second),
+				NotificationTimeout:     durationpb.New(30 * time.Second),
+				EnableCache:             true,
+				CacheDir:                "/tmp/cache",
+				MaxRetryTimes:           3,
 				CircuitBreakerThreshold: 0.5,
-				LogLevel:           "info",
+				LogLevel:                "info",
 			},
 			wantErr: false,
 		},
@@ -194,7 +194,7 @@ func TestValidationResult(t *testing.T) {
 func TestValidateConfig(t *testing.T) {
 	validConfig := &conf.Apollo{
 		AppId:      "test-app",
-		MetaServer: "http://localhost:8080",
+		MetaServer: "https://localhost:8080",
 	}
 
 	err := ValidateConfig(validConfig)
@@ -208,4 +208,3 @@ func TestValidateConfig(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "validation failed")
 }
-

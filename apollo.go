@@ -137,6 +137,10 @@ func (p *PlugApollo) setDefaultConfig() {
 	if p.conf.CacheDir == "" {
 		p.conf.CacheDir = conf.DefaultCacheDir
 	}
+	// Default circuit breaker threshold keeps validation aligned with runtime defaults.
+	if p.conf.CircuitBreakerThreshold == 0 {
+		p.conf.CircuitBreakerThreshold = conf.DefaultCircuitBreakerThreshold
+	}
 }
 
 // validateConfig validates configuration

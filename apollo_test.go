@@ -32,6 +32,7 @@ func TestPlugApollo_setDefaultConfig(t *testing.T) {
 	assert.NotNil(t, plugin.conf.Timeout)
 	assert.NotNil(t, plugin.conf.NotificationTimeout)
 	assert.Equal(t, conf.DefaultCacheDir, plugin.conf.CacheDir)
+	assert.Equal(t, float32(conf.DefaultCircuitBreakerThreshold), plugin.conf.CircuitBreakerThreshold)
 }
 
 // TestPlugApollo_validateConfig tests configuration validation
@@ -45,13 +46,13 @@ func TestPlugApollo_validateConfig(t *testing.T) {
 			name: "valid config",
 			config: &conf.Apollo{
 				AppId:      "test-app",
-				MetaServer: "http://localhost:8080",
+				MetaServer: "https://localhost:8080",
 			},
 			wantErr: false,
 		},
 		{
-			name: "invalid config - nil",
-			config: nil,
+			name:    "invalid config - nil",
+			config:  nil,
 			wantErr: true,
 		},
 		{
@@ -72,7 +73,7 @@ func TestPlugApollo_validateConfig(t *testing.T) {
 			name: "invalid config - invalid meta_server URL",
 			config: &conf.Apollo{
 				AppId:      "test-app",
-				MetaServer: "invalid-url",
+				MetaServer: "://invalid-url",
 			},
 			wantErr: true,
 		},
@@ -80,7 +81,7 @@ func TestPlugApollo_validateConfig(t *testing.T) {
 			name: "valid config with timeout",
 			config: &conf.Apollo{
 				AppId:      "test-app",
-				MetaServer: "http://localhost:8080",
+				MetaServer: "https://localhost:8080",
 				Timeout:    durationpb.New(5 * time.Second),
 			},
 			wantErr: false,
@@ -327,7 +328,7 @@ func TestCircuitBreaker_GetState(t *testing.T) {
 
 // TestCircuitBreaker_GetFailureRate tests getting failure rate
 func TestCircuitBreaker_GetFailureRate(t *testing.T) {
-	cb := NewCircuitBreaker(0.5)
+	cb := NewCircuitBreaker(0.9)
 
 	// No operations yet
 	rate := cb.GetFailureRate()
@@ -340,6 +341,23 @@ func TestCircuitBreaker_GetFailureRate(t *testing.T) {
 
 	rate = cb.GetFailureRate()
 	assert.Equal(t, 2.0/3.0, rate)
+}
+
+func TestCircuitBreaker_GetFailureRate_OpenCircuitStopsCountingBlockedCalls(t *testing.T) {
+	cb := NewCircuitBreaker(0.5)
+
+	err := cb.Do(func() error { return nil })
+	assert.NoError(t, err)
+
+	err = cb.Do(func() error { return assert.AnError })
+	assert.Error(t, err)
+	assert.Equal(t, CircuitStateOpen, cb.GetState())
+	assert.Equal(t, 0.5, cb.GetFailureRate())
+
+	err = cb.Do(func() error { return assert.AnError })
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "circuit breaker is open")
+	assert.Equal(t, 0.5, cb.GetFailureRate())
 }
 
 // TestCircuitBreaker_ForceOpen tests forcing circuit breaker open
@@ -386,7 +404,7 @@ func TestConfigWatcher_Stop(t *testing.T) {
 
 	// Test stop
 	watcher.Stop()
-	
+
 	// Test stop again (should be idempotent)
 	watcher.Stop()
 }
@@ -496,4 +514,3 @@ func TestApolloError_Is(t *testing.T) {
 	assert.True(t, err1.Is(err2))
 	assert.False(t, err1.Is(err3))
 }
-

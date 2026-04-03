@@ -73,6 +73,7 @@ func NewValidator(config *conf.Apollo) *Validator {
 // Validate validates configuration
 func (v *Validator) Validate() *ValidationResult {
 	result := NewValidationResult()
+	v.applyImplicitDefaults()
 
 	// Validate basic fields
 	v.validateBasicFields(result)
@@ -96,6 +97,15 @@ func (v *Validator) Validate() *ValidationResult {
 	v.validateNetworkConfigs(result)
 
 	return result
+}
+
+func (v *Validator) applyImplicitDefaults() {
+	if v.config == nil {
+		return
+	}
+	if v.config.CircuitBreakerThreshold == 0 {
+		v.config.CircuitBreakerThreshold = conf.DefaultCircuitBreakerThreshold
+	}
 }
 
 // validateBasicFields validates basic fields
@@ -297,4 +307,3 @@ func ValidateConfig(config *conf.Apollo) error {
 
 	return nil
 }
-

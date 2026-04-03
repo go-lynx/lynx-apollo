@@ -228,6 +228,7 @@ func (cb *CircuitBreaker) ForceOpen() {
 	cb.mu <- struct{}{}
 	defer func() { <-cb.mu }()
 	cb.state = CircuitStateOpen
+	cb.lastFailure = time.Now()
 	log.Warnf("Circuit breaker forced open")
 }
 
@@ -239,4 +240,3 @@ func (cb *CircuitBreaker) ForceClose() {
 	cb.resetCounters()
 	log.Infof("Circuit breaker forced closed")
 }
-

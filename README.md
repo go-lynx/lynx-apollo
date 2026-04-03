@@ -16,7 +16,7 @@ This plugin provides Apollo configuration center integration for the Lynx framew
 ## Installation
 
 ```bash
-go get github.com/go-lynx/lynx/plugins/apollo
+go get github.com/go-lynx/lynx-apollo
 ```
 
 ## Configuration
@@ -64,28 +64,45 @@ lynx:
       merge_strategy: "override"                # Merge strategy (override, merge, append)
 ```
 
+Complete example: [conf/example_config.yml](./conf/example_config.yml).
+If you rely on retry, circuit breaker, graceful shutdown, or logging-related behavior, set those fields explicitly in config instead of assuming omitted values will always be defaulted at runtime.
+
 ### Configuration Options
 
-- `app_id`: Apollo application ID (required)
-- `cluster`: Cluster name (default: "default")
-- `namespace`: Namespace name (default: "application")
-- `meta_server`: Apollo Meta Server address (required)
-- `token`: Authentication token (optional)
-- `timeout`: Operation timeout (default: 10s)
-- `enable_notification`: Enable configuration change notification (default: true)
-- `notification_timeout`: Notification timeout (default: 30s)
-- `enable_cache`: Enable local cache (default: true)
-- `cache_dir`: Cache directory (default: "/tmp/apollo-cache")
-- `enable_metrics`: Enable monitoring metrics (default: true)
-- `enable_retry`: Enable retry mechanism (default: true)
-- `max_retry_times`: Maximum retry times (default: 3)
-- `retry_interval`: Retry interval (default: 1s)
-- `enable_circuit_breaker`: Enable circuit breaker (default: true)
-- `circuit_breaker_threshold`: Circuit breaker threshold (default: 0.5)
-- `enable_graceful_shutdown`: Enable graceful shutdown (default: true)
-- `shutdown_timeout`: Graceful shutdown timeout (default: 30s)
-- `enable_logging`: Enable detailed logging (default: true)
-- `log_level`: Log level (default: "info")
+#### Basic Options
+- `app_id` (string, required): Apollo application ID. Example: `"my-app"`
+- `cluster` (string, default: `"default"`): Cluster name. Example: `"default"`
+- `namespace` (string, default: `"application"`): Namespace name. Example: `"application"`
+- `meta_server` (string, required): Apollo Meta Server address. Example: `"http://localhost:8080"`
+- `token` (string, optional): Authentication token. Example: `"your-token"`
+- `timeout` (duration, default: `"10s"`): Operation timeout. Example: `"15s"`
+- `release_key` (string, optional): Release key for the configuration. Example: `"20230510-120000-abcdef"`
+- `ip` (string, optional): Client IP address. Example: `"192.168.1.10"`
+
+#### Notification & Cache
+- `enable_notification` (bool, default: `true`): Enable configuration change notification.
+- `notification_timeout` (duration, default: `"30s"`): Notification timeout. Example: `"60s"`
+- `enable_cache` (bool, default: `true`): Enable local cache.
+- `cache_dir` (string, default: `"/tmp/apollo-cache"`): Cache directory.
+
+#### Advanced Features
+- `enable_metrics` (bool, default: `true`): Enable monitoring metrics.
+- `enable_retry` (bool, default: `true`): Enable retry mechanism.
+- `max_retry_times` (int32, default: `3`): Maximum retry times.
+- `retry_interval` (duration, default: `"1s"`): Retry interval. Example: `"500ms"`
+- `enable_circuit_breaker` (bool, default: `true`): Enable circuit breaker.
+- `circuit_breaker_threshold` (float, default: `0.5`): Circuit breaker threshold.
+- `enable_graceful_shutdown` (bool, default: `true`): Enable graceful shutdown.
+- `shutdown_timeout` (duration, default: `"30s"`): Graceful shutdown timeout.
+- `enable_logging` (bool, default: `true`): Enable detailed logging.
+- `log_level` (string, default: `"info"`): Log level (debug, info, warn, error).
+
+#### Service Configuration
+Used for loading configurations from multiple namespaces.
+- `service_config.namespace` (string, optional): Main namespace. Defaults to the top-level `namespace`.
+- `service_config.additional_namespaces` (repeated string, optional): List of additional namespaces to load.
+- `service_config.priority` (int32, default: `0`): Merge priority (higher number = higher priority).
+- `service_config.merge_strategy` (string, default: `"override"`): How to handle conflicts (`override`, `merge`, `append`).
 
 ## Usage
 
@@ -95,15 +112,17 @@ The plugin automatically registers itself when imported. You can access it throu
 
 ```go
 import (
-    "github.com/go-lynx/lynx/plugins/apollo"
-    "github.com/go-lynx/lynx/app"
+    "github.com/go-lynx/lynx"
+    apollo "github.com/go-lynx/lynx-apollo"
 )
 
 // Get Apollo plugin
-plugin := app.Lynx().GetPluginManager().GetPlugin("apollo.config.center")
-if plugin != nil {
-    apolloPlugin := plugin.(*apollo.PlugApollo)
-    // Use the plugin
+raw := lynx.Lynx().GetPluginManager().GetPlugin("apollo.config.center")
+if raw != nil {
+    apolloPlugin, ok := raw.(*apollo.PlugApollo)
+    if ok && apolloPlugin != nil {
+        // Use the plugin
+    }
 }
 ```
 
@@ -159,13 +178,13 @@ defer watcher.Stop()
 
 ## Implementation Notes
 
-This plugin provides a complete framework for Apollo integration. The actual Apollo client implementation depends on the Apollo Go SDK being used. The following methods need to be implemented based on the specific Apollo SDK:
+This plugin currently uses an HTTP-based Apollo client plus long polling for config-source watching.
 
-1. `initApolloClient()` - Initialize Apollo client
-2. `getConfigValueFromApollo()` - Get configuration value from Apollo
-3. `ApolloConfigSource.Load()` - Load configurations from Apollo
-4. `ApolloConfigSource.Watch()` - Watch configuration changes
-5. `ConfigWatcher` notification listener - Listen to Apollo notifications
+Current boundaries to keep in mind:
+
+1. `WatchConfig()` returns the legacy callback-style `*ConfigWatcher`, while the lower-level `config.Watcher` integration lives in `watcher_adapter.go`.
+2. Advanced feature fields such as retry / circuit breaker / graceful shutdown / logging should be set explicitly in config when you depend on them.
+3. The current automated validation baseline is red; see [VALIDATION.md](./VALIDATION.md) before treating the examples here as CI-passing coverage.
 
 ## Metrics
 
@@ -184,7 +203,10 @@ The plugin exposes the following Prometheus metrics:
 - `lynx_apollo_cache_hits_total` - Total number of cache hits
 - `lynx_apollo_cache_misses_total` - Total number of cache misses
 
+## Validation
+
+Current automated baseline in this workspace is red. See [VALIDATION.md](./VALIDATION.md) for the exact failing tests and current `go test ./...` output summary.
+
 ## License
 
 This plugin is part of the Lynx framework and follows the same license.
-
