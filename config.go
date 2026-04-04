@@ -141,10 +141,11 @@ func (p *PlugApollo) GetConfigValue(namespace, key string) (string, error) {
 	}
 
 	// Record configuration operation metrics
+	success := false
 	if p.metrics != nil {
 		p.metrics.RecordConfigOperation(namespace, "get", "start")
 		defer func() {
-			if p.metrics != nil {
+			if p.metrics != nil && success {
 				p.metrics.RecordConfigOperation(namespace, "get", "success")
 			}
 		}()
@@ -178,6 +179,7 @@ func (p *PlugApollo) GetConfigValue(namespace, key string) (string, error) {
 		return "", WrapClientError(lastErr, ErrCodeConfigGetFailed, "failed to get config value")
 	}
 
+	success = true
 	log.Infof("Successfully got config value - Namespace: [%s], Key: [%s]", namespace, key)
 	return value, nil
 }

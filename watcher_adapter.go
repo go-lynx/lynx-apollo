@@ -2,6 +2,7 @@ package apollo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -12,21 +13,28 @@ import (
 
 // ApolloConfigWatcher implements config.Watcher interface for Apollo
 type ApolloConfigWatcher struct {
-	client      *ApolloHTTPClient
-	namespace   string
-	stopCh      chan struct{}
-	notifyCh    chan []*config.KeyValue
-	mu          sync.RWMutex
-	notificationId int64
+	client              *ApolloHTTPClient
+	namespace           string
+	stopCh              chan struct{}
+	notifyCh            chan []*config.KeyValue
+	mu                  sync.RWMutex
+	notificationId      int64
+	watchCtx            context.Context
+	cancelWatch         context.CancelFunc
+	notificationTimeout time.Duration
 }
 
 // NewApolloConfigWatcher creates a new Apollo config watcher
 func NewApolloConfigWatcher(client *ApolloHTTPClient, namespace string) *ApolloConfigWatcher {
+	watchCtx, cancelWatch := context.WithCancel(context.Background())
 	return &ApolloConfigWatcher{
-		client:    client,
-		namespace: namespace,
-		stopCh:    make(chan struct{}),
-		notifyCh:  make(chan []*config.KeyValue, 1),
+		client:              client,
+		namespace:           namespace,
+		stopCh:              make(chan struct{}),
+		notifyCh:            make(chan []*config.KeyValue, 1),
+		watchCtx:            watchCtx,
+		cancelWatch:         cancelWatch,
+		notificationTimeout: 60 * time.Second,
 	}
 }
 
@@ -50,6 +58,9 @@ func (w *ApolloConfigWatcher) Stop() error {
 		// Already stopped
 		return nil
 	default:
+		if w.cancelWatch != nil {
+			w.cancelWatch()
+		}
 		close(w.stopCh)
 		return nil
 	}
@@ -62,8 +73,6 @@ func (w *ApolloConfigWatcher) Start() {
 
 // watchLoop continuously watches for configuration changes
 func (w *ApolloConfigWatcher) watchLoop() {
-	timeout := 60 * time.Second // Default notification timeout
-
 	for {
 		select {
 		case <-w.stopCh:
@@ -71,9 +80,12 @@ func (w *ApolloConfigWatcher) watchLoop() {
 			return
 		default:
 			// Watch for notifications using long polling
-			ctx := context.Background()
-			notifications, err := w.client.WatchNotifications(ctx, w.namespace, w.notificationId, timeout)
+			notifications, err := w.client.WatchNotifications(w.watchCtx, w.namespace, w.notificationId, w.notificationTimeout)
 			if err != nil {
+				if errors.Is(w.watchCtx.Err(), context.Canceled) {
+					log.Infof("Apollo config watcher canceled for namespace: %s", w.namespace)
+					return
+				}
 				log.Errorf("Failed to watch Apollo notifications for namespace %s: %v", w.namespace, err)
 				// Wait a bit before retrying
 				select {
@@ -94,8 +106,11 @@ func (w *ApolloConfigWatcher) watchLoop() {
 						w.mu.Unlock()
 
 						// Reload configuration
-						configResp, err := w.client.GetConfig(ctx, w.namespace)
+						configResp, err := w.client.GetConfig(w.watchCtx, w.namespace)
 						if err != nil {
+							if errors.Is(w.watchCtx.Err(), context.Canceled) {
+								return
+							}
 							log.Errorf("Failed to reload config after notification: %v", err)
 							continue
 						}
@@ -121,4 +136,3 @@ func (w *ApolloConfigWatcher) watchLoop() {
 		}
 	}
 }
-

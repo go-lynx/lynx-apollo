@@ -1,10 +1,15 @@
 package apollo
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-lynx/lynx-apollo/conf"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -407,6 +412,83 @@ func TestConfigWatcher_Stop(t *testing.T) {
 
 	// Test stop again (should be idempotent)
 	watcher.Stop()
+}
+
+func TestPlugApollo_GetConfigValueFailureDoesNotRecordSuccess(t *testing.T) {
+	plugin := NewApolloConfigCenter()
+	plugin.conf = &conf.Apollo{}
+	plugin.metrics = &Metrics{
+		configOperationsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "test",
+				Subsystem: "apollo",
+				Name:      "config_operations_total",
+				Help:      "test helper",
+			},
+			[]string{"namespace", "operation", "status"},
+		),
+	}
+	plugin.retryManager = NewRetryManager(0, time.Millisecond)
+	plugin.circuitBreaker = NewCircuitBreaker(2.0)
+	plugin.setInitialized()
+
+	_, err := plugin.GetConfigValue("application", "missing")
+	assert.Error(t, err)
+	assert.Equal(t, 1.0, readCounterValue(t, plugin.metrics.configOperationsTotal.WithLabelValues("application", "get", "start")))
+	assert.Equal(t, 1.0, readCounterValue(t, plugin.metrics.configOperationsTotal.WithLabelValues("application", "get", "error")))
+	assert.Equal(t, 0.0, readCounterValue(t, plugin.metrics.configOperationsTotal.WithLabelValues("application", "get", "success")))
+}
+
+func TestApolloConfigWatcher_StopCancelsInflightLongPoll(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	requestCanceled := make(chan struct{}, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/notifications/v2") {
+			select {
+			case requestStarted <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+			select {
+			case requestCanceled <- struct{}{}:
+			default:
+			}
+			return
+		}
+		t.Fatalf("unexpected request path: %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	client := NewApolloHTTPClient(server.URL, "test-app", "default", "application", "", time.Minute)
+	client.configServer = server.URL
+	watcher := NewApolloConfigWatcher(client, "application")
+	watcher.Start()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected long-poll request to start")
+	}
+
+	assert.NoError(t, watcher.Stop())
+	assert.NoError(t, watcher.Stop())
+
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("expected Stop to cancel the in-flight watch request")
+	}
+}
+
+func readCounterValue(t *testing.T, counter prometheus.Counter) float64 {
+	t.Helper()
+
+	metric := &dto.Metric{}
+	if err := counter.Write(metric); err != nil {
+		t.Fatalf("failed to read prometheus counter: %v", err)
+	}
+	return metric.GetCounter().GetValue()
 }
 
 // TestErrorCreation tests error creation functions
