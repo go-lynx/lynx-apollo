@@ -4,8 +4,17 @@ import (
 	"github.com/go-kratos/kratos/v2/middleware"
 	"github.com/go-kratos/kratos/v2/registry"
 	"github.com/go-kratos/kratos/v2/selector"
+	"github.com/go-lynx/lynx"
 	"github.com/go-lynx/lynx/log"
 )
+
+// ControlPlaneCapabilities declares Apollo's explicit control plane contract.
+func (p *PlugApollo) ControlPlaneCapabilities() []lynx.ControlPlaneCapability {
+	return []lynx.ControlPlaneCapability{
+		lynx.ControlPlaneCapabilityConfig,
+		lynx.ControlPlaneCapabilityWatcher,
+	}
+}
 
 // HTTPRateLimit implements the RateLimiter interface for HTTP rate limiting
 // Apollo is a configuration center, not a rate limiting service, so this returns nil
@@ -41,4 +50,3 @@ func (p *PlugApollo) NewNodeRouter(serviceName string) selector.NodeFilter {
 	log.Debugf("Apollo plugin does not support service routing, returning nil for service: %s", serviceName)
 	return nil
 }
-

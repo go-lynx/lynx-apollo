@@ -10,6 +10,8 @@ require (
 	google.golang.org/protobuf v1.36.10
 )
 
+replace github.com/go-lynx/lynx => ../lynx
+
 require (
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/Masterminds/semver/v3 v3.2.1 // indirect

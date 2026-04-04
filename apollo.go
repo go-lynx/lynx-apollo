@@ -188,9 +188,54 @@ func (p *PlugApollo) setInitialized() {
 	atomic.StoreInt32(&p.initialized, 1)
 }
 
+func (p *PlugApollo) clearInitialized() {
+	atomic.StoreInt32(&p.initialized, 0)
+}
+
 // setDestroyed atomically sets destruction status
 func (p *PlugApollo) setDestroyed() {
 	atomic.StoreInt32(&p.destroyed, 1)
+}
+
+func (p *PlugApollo) publishRuntimeResources() error {
+	if p.rt == nil {
+		return nil
+	}
+	if err := lynx.RegisterControlPlaneCapabilityResources(p.rt, pluginName, p); err != nil {
+		return err
+	}
+	if err := p.rt.RegisterPrivateResource("http_client", p.client); err != nil && p.client != nil {
+		log.Warnf("failed to register Apollo private http client resource: %v", err)
+	}
+	if err := p.rt.RegisterPrivateResource("client", p.client); err != nil && p.client != nil {
+		log.Warnf("failed to register Apollo private client resource: %v", err)
+	}
+	if p.metrics != nil {
+		if err := p.rt.RegisterPrivateResource("metrics", p.metrics); err != nil {
+			log.Warnf("failed to register Apollo private metrics resource: %v", err)
+		}
+	}
+	if p.retryManager != nil {
+		if err := p.rt.RegisterPrivateResource("retry_manager", p.retryManager); err != nil {
+			log.Warnf("failed to register Apollo private retry manager resource: %v", err)
+		}
+	}
+	if p.circuitBreaker != nil {
+		if err := p.rt.RegisterPrivateResource("circuit_breaker", p.circuitBreaker); err != nil {
+			log.Warnf("failed to register Apollo private circuit breaker resource: %v", err)
+		}
+	}
+	if p.configWatchers != nil {
+		if err := p.rt.RegisterPrivateResource("config_watchers", p.configWatchers); err != nil {
+			log.Warnf("failed to register Apollo private config watchers resource: %v", err)
+		}
+	}
+	if p.configCache != nil {
+		if err := p.rt.RegisterPrivateResource("config_cache", p.configCache); err != nil {
+			log.Warnf("failed to register Apollo private config cache resource: %v", err)
+		}
+	}
+	return nil
 }
 
 // StartupTasks implements custom startup logic for the Apollo plugin.
@@ -228,40 +273,19 @@ func (p *PlugApollo) StartupTasks() error {
 
 	// Save client instance
 	p.client = client
+	p.setInitialized()
 
-	if p.rt != nil {
-		if err := p.rt.RegisterSharedResource(pluginName, p); err != nil {
-			return WrapInitError(err, "failed to register Apollo shared resource")
+	started := false
+	defer func() {
+		if started {
+			return
 		}
-		if err := p.rt.RegisterPrivateResource("client", p.client); err != nil {
-			log.Warnf("failed to register Apollo private client resource: %v", err)
+		p.clearInitialized()
+		if p.client != nil {
+			p.client.Close()
+			p.client = nil
 		}
-		if p.metrics != nil {
-			if err := p.rt.RegisterPrivateResource("metrics", p.metrics); err != nil {
-				log.Warnf("failed to register Apollo private metrics resource: %v", err)
-			}
-		}
-		if p.retryManager != nil {
-			if err := p.rt.RegisterPrivateResource("retry_manager", p.retryManager); err != nil {
-				log.Warnf("failed to register Apollo private retry manager resource: %v", err)
-			}
-		}
-		if p.circuitBreaker != nil {
-			if err := p.rt.RegisterPrivateResource("circuit_breaker", p.circuitBreaker); err != nil {
-				log.Warnf("failed to register Apollo private circuit breaker resource: %v", err)
-			}
-		}
-		if p.configWatchers != nil {
-			if err := p.rt.RegisterPrivateResource("config_watchers", p.configWatchers); err != nil {
-				log.Warnf("failed to register Apollo private config watchers resource: %v", err)
-			}
-		}
-		if p.configCache != nil {
-			if err := p.rt.RegisterPrivateResource("config_cache", p.configCache); err != nil {
-				log.Warnf("failed to register Apollo private config cache resource: %v", err)
-			}
-		}
-	}
+	}()
 
 	// Set the Apollo configuration center as the Lynx application's control plane.
 	err = lynx.Lynx().SetControlPlane(p)
@@ -283,10 +307,24 @@ func (p *PlugApollo) StartupTasks() error {
 		return WrapInitError(err, "failed to init control plane config")
 	}
 
-	// Load plugins from the plugin list.
-	lynx.Lynx().GetPluginManager().LoadPlugins(cfg)
+	if err := p.publishRuntimeResources(); err != nil {
+		log.Errorf("Failed to publish Apollo runtime resources: %v", err)
+		if p.metrics != nil {
+			p.metrics.RecordClientOperation("startup", "error")
+		}
+		return WrapInitError(err, "failed to publish runtime resources")
+	}
 
-	p.setInitialized()
+	// Load plugins from the plugin list.
+	if err := lynx.Lynx().GetPluginManager().LoadPlugins(cfg); err != nil {
+		log.Errorf("Failed to load dependent plugins from Apollo config: %v", err)
+		if p.metrics != nil {
+			p.metrics.RecordClientOperation("startup", "error")
+		}
+		return WrapInitError(err, "failed to load dependent plugins")
+	}
+
+	started = true
 	log.Infof("Apollo plugin initialized successfully")
 	return nil
 }

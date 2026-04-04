@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/go-kratos/kratos/v2/config"
+	"github.com/go-lynx/lynx"
 	"github.com/go-lynx/lynx-apollo/conf"
 	"github.com/go-lynx/lynx/log"
 )
@@ -61,6 +62,69 @@ func (p *PlugApollo) GetConfigSources() ([]config.Source, error) {
 	sources = append(sources, additionalSources...)
 
 	return sources, nil
+}
+
+// GetConfigWatchTargets returns the remote config entries that should feed the global config snapshot.
+func (p *PlugApollo) GetConfigWatchTargets(appName string) ([]lynx.ControlPlaneConfigTarget, error) {
+	if err := p.checkInitialized(); err != nil {
+		return nil, err
+	}
+
+	targets := make([]lynx.ControlPlaneConfigTarget, 0, 4)
+	mainNamespace := p.conf.Namespace
+	mainPriority := 0
+	mainStrategy := ""
+	if p.conf.ServiceConfig != nil {
+		if p.conf.ServiceConfig.Namespace != "" {
+			mainNamespace = p.conf.ServiceConfig.Namespace
+		}
+		mainPriority = int(p.conf.ServiceConfig.Priority)
+		mainStrategy = p.conf.ServiceConfig.MergeStrategy
+	}
+	if mainNamespace == "" {
+		mainNamespace = conf.DefaultNamespace
+	}
+	targets = append(targets, lynx.ControlPlaneConfigTarget{
+		FileName:      mainNamespace,
+		Priority:      mainPriority,
+		MergeStrategy: mainStrategy,
+	})
+
+	if p.conf.ServiceConfig == nil {
+		return targets, nil
+	}
+
+	for _, namespace := range p.conf.ServiceConfig.AdditionalNamespaces {
+		if namespace == "" {
+			namespace = p.conf.ServiceConfig.Namespace
+		}
+		if namespace == "" {
+			namespace = p.conf.Namespace
+		}
+		if namespace == "" {
+			continue
+		}
+		targets = append(targets, lynx.ControlPlaneConfigTarget{
+			FileName:      namespace,
+			Priority:      int(p.conf.ServiceConfig.Priority),
+			MergeStrategy: p.conf.ServiceConfig.MergeStrategy,
+		})
+	}
+
+	return targets, nil
+}
+
+// WatchControlPlaneConfig opens a running watcher for a remote config target.
+func (p *PlugApollo) WatchControlPlaneConfig(ctx context.Context, target lynx.ControlPlaneConfigTarget) (config.Watcher, error) {
+	if err := p.checkInitialized(); err != nil {
+		return nil, err
+	}
+	watcher := NewApolloConfigWatcher(p.client, target.FileName)
+	if err := lynx.StartControlPlaneWatcher(ctx, watcher); err != nil {
+		_ = watcher.Stop()
+		return nil, err
+	}
+	return watcher, nil
 }
 
 // getMainConfigSource gets the main configuration source based on service_config
@@ -268,5 +332,6 @@ func (s *ApolloConfigSource) Load() ([]*config.KeyValue, error) {
 func (s *ApolloConfigSource) Watch() (config.Watcher, error) {
 	// Create a config watcher adapter
 	watcher := NewApolloConfigWatcher(s.client, s.namespace)
+	watcher.Start()
 	return watcher, nil
 }
