@@ -1,6 +1,7 @@
 package apollo
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/go-lynx/lynx/log"
@@ -53,9 +54,11 @@ func (p *PlugApollo) closeClientConnection() {
 		// Get client information
 		clientInfo := map[string]interface{}{
 			"client_type": "ApolloHTTPClient",
-			"app_id":      p.conf.AppId,
-			"cluster":     p.conf.Cluster,
-			"namespace":   p.conf.Namespace,
+		}
+		if p.conf != nil {
+			clientInfo["app_id"] = p.conf.AppId
+			clientInfo["cluster"] = p.conf.Cluster
+			clientInfo["namespace"] = p.conf.Namespace
 		}
 
 		// Close HTTP client
@@ -158,14 +161,11 @@ func (p *PlugApollo) getCleanupStats() map[string]interface{} {
 
 // CleanupTasks cleanup tasks
 func (p *PlugApollo) CleanupTasks() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if !p.IsInitialized() {
 		return nil
 	}
 
-	if p.IsDestroyed() {
+	if !atomic.CompareAndSwapInt32(&p.destroyed, 0, 1) {
 		return nil
 	}
 
@@ -196,7 +196,7 @@ func (p *PlugApollo) CleanupTasks() error {
 	// 5. Stop background tasks
 	p.stopBackgroundTasks()
 
-	p.setDestroyed()
+	p.clearInitialized()
 	log.Infof("Apollo plugin destroyed successfully")
 	return nil
 }

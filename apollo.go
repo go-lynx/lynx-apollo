@@ -79,6 +79,7 @@ func NewApolloConfigCenter() *PlugApollo {
 		),
 		healthCheckCh:  make(chan struct{}),
 		configWatchers: make(map[string]*ConfigWatcher),
+		configCache:    make(map[string]interface{}),
 	}
 }
 
@@ -89,6 +90,7 @@ func (p *PlugApollo) InitializeResources(rt plugins.Runtime) error {
 		return err
 	}
 	p.rt = rt
+	atomic.StoreInt32(&p.destroyed, 0)
 
 	// Initialize an empty configuration structure
 	p.conf = &conf.Apollo{}
@@ -117,6 +119,9 @@ func (p *PlugApollo) InitializeResources(rt plugins.Runtime) error {
 
 // setDefaultConfig sets default configuration
 func (p *PlugApollo) setDefaultConfig() {
+	if p.conf == nil {
+		return
+	}
 	// Default cluster is 'default'
 	if p.conf.Cluster == "" {
 		p.conf.Cluster = conf.DefaultCluster
@@ -164,10 +169,22 @@ func (p *PlugApollo) initComponents() error {
 	p.metrics = NewApolloMetrics()
 
 	// Initialize retry manager
-	p.retryManager = NewRetryManager(3, time.Second)
+	maxRetries := int(conf.DefaultMaxRetryTimes)
+	if p.conf != nil && p.conf.MaxRetryTimes > 0 {
+		maxRetries = int(p.conf.MaxRetryTimes)
+	}
+	retryInterval := conf.DefaultRetryInterval
+	if p.conf != nil && p.conf.RetryInterval != nil && p.conf.RetryInterval.AsDuration() > 0 {
+		retryInterval = p.conf.RetryInterval.AsDuration()
+	}
+	p.retryManager = NewRetryManager(maxRetries, retryInterval)
 
 	// Initialize circuit breaker
-	p.circuitBreaker = NewCircuitBreaker(0.5)
+	threshold := conf.DefaultCircuitBreakerThreshold
+	if p.conf != nil && p.conf.CircuitBreakerThreshold > 0 {
+		threshold = float64(p.conf.CircuitBreakerThreshold)
+	}
+	p.circuitBreaker = NewCircuitBreaker(threshold)
 
 	return nil
 }
@@ -247,12 +264,16 @@ func (p *PlugApollo) StartupTasks() error {
 	if atomic.LoadInt32(&p.initialized) == 1 {
 		return NewInitError("Apollo plugin already initialized")
 	}
+	if p.conf == nil {
+		return NewConfigError("configuration is required")
+	}
 
+	started := false
 	// Record startup operation metrics
 	if p.metrics != nil {
 		p.metrics.RecordClientOperation("startup", "start")
 		defer func() {
-			if p.metrics != nil {
+			if started && p.metrics != nil {
 				p.metrics.RecordClientOperation("startup", "success")
 			}
 		}()
@@ -275,7 +296,6 @@ func (p *PlugApollo) StartupTasks() error {
 	p.client = client
 	p.setInitialized()
 
-	started := false
 	defer func() {
 		if started {
 			return

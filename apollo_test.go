@@ -1,9 +1,11 @@
 package apollo
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +25,7 @@ func TestNewApolloConfigCenter(t *testing.T) {
 	assert.Equal(t, pluginDescription, plugin.Description())
 	assert.NotNil(t, plugin.healthCheckCh)
 	assert.NotNil(t, plugin.configWatchers)
+	assert.NotNil(t, plugin.configCache)
 }
 
 // TestPlugApollo_setDefaultConfig tests default configuration setting
@@ -233,6 +236,60 @@ func TestApolloHTTPClient_Close(t *testing.T) {
 	client.mu.RLock()
 	assert.Empty(t, client.configServer)
 	client.mu.RUnlock()
+
+	_, err := client.GetConfig(context.Background(), "application")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "closed")
+}
+
+func TestPlugApollo_CleanupTasksDoesNotDeadlockAndResetsState(t *testing.T) {
+	plugin := NewApolloConfigCenter()
+	plugin.conf = &conf.Apollo{
+		AppId:      "test-app",
+		MetaServer: "https://localhost:8080",
+		Cluster:    conf.DefaultCluster,
+		Namespace:  conf.DefaultNamespace,
+	}
+	plugin.client = NewApolloHTTPClient("https://localhost:8080", "test-app", conf.DefaultCluster, conf.DefaultNamespace, "", time.Second)
+	plugin.retryManager = NewRetryManager(0, time.Millisecond)
+	plugin.circuitBreaker = NewCircuitBreaker(conf.DefaultCircuitBreakerThreshold)
+	plugin.configCache["application:key"] = "value"
+	plugin.setInitialized()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- plugin.CleanupTasks()
+	}()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("CleanupTasks deadlocked")
+	}
+
+	assert.False(t, plugin.IsInitialized())
+	assert.True(t, plugin.IsDestroyed())
+	assert.Nil(t, plugin.client)
+	assert.Empty(t, plugin.configWatchers)
+	assert.Empty(t, plugin.configCache)
+}
+
+func TestApolloConfigWatcher_StartStopIdempotent(t *testing.T) {
+	client := NewApolloHTTPClient("http://127.0.0.1:1", "test-app", conf.DefaultCluster, conf.DefaultNamespace, "", 20*time.Millisecond)
+	watcher := NewApolloConfigWatcher(client, conf.DefaultNamespace)
+	watcher.notificationTimeout = 20 * time.Millisecond
+
+	watcher.Start()
+	watcher.Start()
+	assert.NoError(t, watcher.Stop())
+	assert.NoError(t, watcher.Stop())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&watcher.closed))
+
+	kvs, err := watcher.Next()
+	assert.Nil(t, kvs)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "watcher stopped")
 }
 
 // TestNewRetryManager tests retry manager creation

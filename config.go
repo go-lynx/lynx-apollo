@@ -20,6 +20,9 @@ func (p *PlugApollo) GetConfig(fileName string, group string) (config.Source, er
 	if err := p.checkInitialized(); err != nil {
 		return nil, err
 	}
+	if p.client == nil {
+		return nil, NewInitError("Apollo client is nil")
+	}
 
 	// For Apollo, namespace is used instead of fileName/group
 	// fileName is treated as namespace, group is ignored (Apollo uses app_id + cluster + namespace)
@@ -118,6 +121,9 @@ func (p *PlugApollo) GetConfigWatchTargets(appName string) ([]lynx.ControlPlaneC
 func (p *PlugApollo) WatchControlPlaneConfig(ctx context.Context, target lynx.ControlPlaneConfigTarget) (config.Watcher, error) {
 	if err := p.checkInitialized(); err != nil {
 		return nil, err
+	}
+	if p.client == nil {
+		return nil, NewInitError("Apollo client is nil")
 	}
 	watcher := NewApolloConfigWatcher(p.client, target.FileName)
 	if err := lynx.StartControlPlaneWatcher(ctx, watcher); err != nil {
@@ -284,6 +290,9 @@ func (p *PlugApollo) getConfigValueFromApollo(namespace, key string) (string, er
 	if p.conf.EnableCache {
 		cacheKey := fmt.Sprintf("%s:%s", namespace, key)
 		p.cacheMutex.Lock()
+		if p.configCache == nil {
+			p.configCache = make(map[string]interface{})
+		}
 		p.configCache[cacheKey] = value
 		p.cacheMutex.Unlock()
 	}
@@ -311,6 +320,9 @@ func NewApolloConfigSource(client *ApolloHTTPClient, appId, cluster, namespace s
 
 // Load implements config.Source interface
 func (s *ApolloConfigSource) Load() ([]*config.KeyValue, error) {
+	if s.client == nil {
+		return nil, fmt.Errorf("apollo HTTP client is nil")
+	}
 	ctx := context.Background()
 	configResp, err := s.client.GetConfig(ctx, s.namespace)
 	if err != nil {
@@ -330,6 +342,9 @@ func (s *ApolloConfigSource) Load() ([]*config.KeyValue, error) {
 
 // Watch implements config.Source interface
 func (s *ApolloConfigSource) Watch() (config.Watcher, error) {
+	if s.client == nil {
+		return nil, fmt.Errorf("apollo HTTP client is nil")
+	}
 	// Create a config watcher adapter
 	watcher := NewApolloConfigWatcher(s.client, s.namespace)
 	watcher.Start()

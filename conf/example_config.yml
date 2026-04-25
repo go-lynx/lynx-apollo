@@ -7,7 +7,7 @@ lynx:
     cluster: "default"                         # Cluster name (default: "default")
     namespace: "application"                   # Namespace (default: "application")
     meta_server: "http://localhost:8080"       # Apollo Meta Server address (required)
-    token: "your-apollo-token"                 # Authentication token (optional)
+    token: ""                                  # Inject through environment-specific config when required
     timeout: "10s"                             # Operation timeout
     
     # Notification Configuration
@@ -38,4 +38,3 @@ lynx:
         - "feature-flags"
       priority: 0                             # Merge priority
       merge_strategy: "override"              # Merge strategy (override, merge, append)
-

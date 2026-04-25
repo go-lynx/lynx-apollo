@@ -73,6 +73,10 @@ func NewValidator(config *conf.Apollo) *Validator {
 // Validate validates configuration
 func (v *Validator) Validate() *ValidationResult {
 	result := NewValidationResult()
+	if v == nil || v.config == nil {
+		result.AddError("config", "configuration cannot be nil", nil)
+		return result
+	}
 	v.applyImplicitDefaults()
 
 	// Validate basic fields

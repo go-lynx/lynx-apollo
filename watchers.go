@@ -83,13 +83,13 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 	log.Infof("Watching config - Namespace: %s", namespace)
 
 	// Check if the configuration is already being watched
-	p.watcherMutex.Lock()
+	p.watcherMutex.RLock()
 	if existingWatcher, exists := p.configWatchers[namespace]; exists {
-		p.watcherMutex.Unlock()
+		p.watcherMutex.RUnlock()
 		log.Infof("Config %s is already being watched", namespace)
 		return existingWatcher, nil
 	}
-	p.watcherMutex.Unlock()
+	p.watcherMutex.RUnlock()
 
 	// Create configuration watcher
 	watcher := NewConfigWatcher(namespace)
@@ -106,6 +106,12 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 
 	// Register watcher
 	p.watcherMutex.Lock()
+	if existingWatcher, exists := p.configWatchers[namespace]; exists {
+		p.watcherMutex.Unlock()
+		watcher.Stop()
+		log.Infof("Config %s is already being watched", namespace)
+		return existingWatcher, nil
+	}
 	p.configWatchers[namespace] = watcher
 	p.watcherMutex.Unlock()
 

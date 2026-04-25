@@ -26,16 +26,20 @@ func (p *PlugApollo) CheckHealth() error {
 // checkApolloHealth checks the health of the Apollo configuration center.
 func (p *PlugApollo) checkApolloHealth() error {
 	// Record the start of the health check
+	success := false
 	if p.metrics != nil {
 		p.metrics.RecordHealthCheck("start")
 		defer func() {
-			if p.metrics != nil {
+			if success && p.metrics != nil {
 				p.metrics.RecordHealthCheck("success")
 			}
 		}()
 	}
 
 	log.Infof("Checking Apollo configuration center health")
+	if p.circuitBreaker == nil || p.retryManager == nil {
+		return NewHealthCheckError("Apollo resilience components are not initialized")
+	}
 
 	// Execute health checks using circuit breaker and retry mechanisms
 	var healthErr error
@@ -65,6 +69,7 @@ func (p *PlugApollo) checkApolloHealth() error {
 		return WrapClientError(healthErr, ErrCodeHealthCheckFailed, "Apollo configuration center health check failed")
 	}
 
+	success = true
 	log.Infof("Apollo configuration center health check passed")
 	return nil
 }
@@ -102,7 +107,9 @@ func (p *PlugApollo) checkConfigManagementHealth() error {
 	}
 
 	// Check whether there are active config watchers
+	p.watcherMutex.RLock()
 	configWatcherCount := len(p.configWatchers)
+	p.watcherMutex.RUnlock()
 	log.Debugf("Config management health: %d active config watchers", configWatcherCount)
 
 	return nil

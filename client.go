@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,7 @@ type ApolloHTTPClient struct {
 	httpClient   *http.Client
 	configServer string // Cached config server address
 	mu           sync.RWMutex
+	closed       int32
 }
 
 // ApolloConfigResponse represents Apollo configuration response
@@ -59,6 +61,9 @@ func NewApolloHTTPClient(metaServer, appId, cluster, namespace, token string, ti
 
 // getConfigServer gets the config server address from meta server
 func (c *ApolloHTTPClient) getConfigServer(ctx context.Context) (string, error) {
+	if atomic.LoadInt32(&c.closed) == 1 {
+		return "", fmt.Errorf("apollo HTTP client is closed")
+	}
 	c.mu.RLock()
 	if c.configServer != "" {
 		server := c.configServer
@@ -131,6 +136,9 @@ func (c *ApolloHTTPClient) getClientIP() string {
 
 // GetConfig gets configuration from Apollo
 func (c *ApolloHTTPClient) GetConfig(ctx context.Context, namespace string) (*ApolloConfigResponse, error) {
+	if atomic.LoadInt32(&c.closed) == 1 {
+		return nil, fmt.Errorf("apollo HTTP client is closed")
+	}
 	configServer, err := c.getConfigServer(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config server: %w", err)
@@ -198,6 +206,9 @@ func (c *ApolloHTTPClient) GetConfigValue(ctx context.Context, namespace, key st
 
 // WatchNotifications watches for configuration changes using long polling
 func (c *ApolloHTTPClient) WatchNotifications(ctx context.Context, namespace string, notificationId int64, timeout time.Duration) ([]ApolloNotificationResponse, error) {
+	if atomic.LoadInt32(&c.closed) == 1 {
+		return nil, fmt.Errorf("apollo HTTP client is closed")
+	}
 	configServer, err := c.getConfigServer(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config server: %w", err)
@@ -256,8 +267,12 @@ func (c *ApolloHTTPClient) WatchNotifications(ctx context.Context, namespace str
 
 // Close closes the HTTP client
 func (c *ApolloHTTPClient) Close() {
+	atomic.StoreInt32(&c.closed, 1)
 	// HTTP client doesn't need explicit close, but we can clear cached config server
 	c.mu.Lock()
 	c.configServer = ""
 	c.mu.Unlock()
+	if c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
+	}
 }

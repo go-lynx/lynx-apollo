@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/config"
@@ -22,6 +23,10 @@ type ApolloConfigWatcher struct {
 	watchCtx            context.Context
 	cancelWatch         context.CancelFunc
 	notificationTimeout time.Duration
+	startOnce           sync.Once
+	stopOnce            sync.Once
+	wg                  sync.WaitGroup
+	closed              int32
 }
 
 // NewApolloConfigWatcher creates a new Apollo config watcher
@@ -40,8 +45,14 @@ func NewApolloConfigWatcher(client *ApolloHTTPClient, namespace string) *ApolloC
 
 // Next returns the next configuration change
 func (w *ApolloConfigWatcher) Next() ([]*config.KeyValue, error) {
+	if atomic.LoadInt32(&w.closed) == 1 {
+		return nil, fmt.Errorf("watcher stopped")
+	}
 	select {
-	case kvs := <-w.notifyCh:
+	case kvs, ok := <-w.notifyCh:
+		if !ok {
+			return nil, fmt.Errorf("watcher stopped")
+		}
 		return kvs, nil
 	case <-w.stopCh:
 		return nil, fmt.Errorf("watcher stopped")
@@ -50,25 +61,26 @@ func (w *ApolloConfigWatcher) Next() ([]*config.KeyValue, error) {
 
 // Stop stops the watcher
 func (w *ApolloConfigWatcher) Stop() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	select {
-	case <-w.stopCh:
-		// Already stopped
-		return nil
-	default:
+	w.stopOnce.Do(func() {
+		atomic.StoreInt32(&w.closed, 1)
 		if w.cancelWatch != nil {
 			w.cancelWatch()
 		}
 		close(w.stopCh)
-		return nil
-	}
+	})
+	w.wg.Wait()
+	return nil
 }
 
 // Start starts watching for configuration changes
 func (w *ApolloConfigWatcher) Start() {
-	go w.watchLoop()
+	w.startOnce.Do(func() {
+		w.wg.Add(1)
+		go func() {
+			defer w.wg.Done()
+			w.watchLoop()
+		}()
+	})
 }
 
 // watchLoop continuously watches for configuration changes
@@ -126,9 +138,9 @@ func (w *ApolloConfigWatcher) watchLoop() {
 
 						// Send notification
 						select {
-						case w.notifyCh <- kvs:
 						case <-w.stopCh:
 							return
+						case w.notifyCh <- kvs:
 						}
 					}
 				}
