@@ -20,7 +20,7 @@ const (
 	pluginName = "apollo.config.center"
 
 	// pluginVersion represents the current version of the Apollo configuration center plugin.
-	pluginVersion = "v1.6.0-beta"
+	pluginVersion = "v1.6.1"
 
 	// pluginDescription briefly describes the functionality of the Apollo configuration center plugin.
 	pluginDescription = "apollo configuration center plugin for lynx framework"
