@@ -1,3 +1,6 @@
+// Package apollo provides an Apollo configuration-centre plugin for the Lynx framework.
+// It connects to an Apollo Config Service, reads namespaces on startup, and watches for
+// configuration changes via long-polling, propagating updates to the Lynx runtime.
 package apollo
 
 import (
@@ -55,7 +58,7 @@ type PlugApollo struct {
 	watcherMutex   sync.RWMutex // Watcher mutex
 
 	// Cache system
-	configCache map[string]interface{} // Configuration cache
+	configCache map[string]any // Configuration cache
 	cacheMutex  sync.RWMutex           // Cache mutex
 }
 
@@ -79,7 +82,7 @@ func NewApolloConfigCenter() *PlugApollo {
 		),
 		healthCheckCh:  make(chan struct{}),
 		configWatchers: make(map[string]*ConfigWatcher),
-		configCache:    make(map[string]interface{}),
+		configCache:    make(map[string]any),
 	}
 }
 
