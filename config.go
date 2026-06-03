@@ -3,7 +3,6 @@ package apollo
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-lynx/lynx"
@@ -192,15 +191,8 @@ func (p *PlugApollo) getAdditionalConfigSources() ([]config.Source, error) {
 		sources = append(sources, source)
 	}
 
-	// Sort by priority if needed (for now, just append in order)
-	// Higher priority configs should be loaded later to override earlier ones
-	// Note: Priority sorting is handled by the framework's config merge logic
-	sort.Slice(sources, func(i, j int) bool {
-		// Return false to maintain insertion order
-		// The framework will handle priority-based merging
-		return false
-	})
-
+	// Sources are appended in the order they appear in AdditionalNamespaces.
+	// Priority-based merging is delegated to the framework's config layer.
 	return sources, nil
 }
 
@@ -291,7 +283,7 @@ func (p *PlugApollo) getConfigValueFromApollo(namespace, key string) (string, er
 		cacheKey := fmt.Sprintf("%s:%s", namespace, key)
 		p.cacheMutex.Lock()
 		if p.configCache == nil {
-			p.configCache = make(map[string]interface{})
+			p.configCache = make(map[string]any)
 		}
 		p.configCache[cacheKey] = value
 		p.cacheMutex.Unlock()
@@ -340,13 +332,16 @@ func (s *ApolloConfigSource) Load() ([]*config.KeyValue, error) {
 	return kvs, nil
 }
 
-// Watch implements config.Source interface
+// Watch implements config.Source.Watch.  Because the Kratos interface does not
+// accept a context, context.Background() is used internally.  Callers are
+// responsible for calling watcher.Stop() when the source is no longer needed.
 func (s *ApolloConfigSource) Watch() (config.Watcher, error) {
 	if s.client == nil {
 		return nil, fmt.Errorf("apollo HTTP client is nil")
 	}
-	// Create a config watcher adapter
 	watcher := NewApolloConfigWatcher(s.client, s.namespace)
-	watcher.Start()
+	if err := watcher.Start(context.Background()); err != nil {
+		return nil, err
+	}
 	return watcher, nil
 }

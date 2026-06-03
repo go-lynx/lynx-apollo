@@ -60,7 +60,7 @@ type ApolloError struct {
 	Code    ErrorCode
 	Message string
 	Cause   error
-	Context map[string]interface{}
+	Context map[string]any
 }
 
 // NewApolloError creates new Apollo error
@@ -68,7 +68,7 @@ func NewApolloError(code ErrorCode, message string) *ApolloError {
 	return &ApolloError{
 		Code:    code,
 		Message: message,
-		Context: make(map[string]interface{}),
+		Context: make(map[string]any),
 	}
 }
 
@@ -79,7 +79,7 @@ func (e *ApolloError) WithCause(cause error) *ApolloError {
 }
 
 // WithContext adds context information
-func (e *ApolloError) WithContext(key string, value interface{}) *ApolloError {
+func (e *ApolloError) WithContext(key string, value any) *ApolloError {
 	e.Context[key] = value
 	return e
 }

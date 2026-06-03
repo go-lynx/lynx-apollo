@@ -280,8 +280,8 @@ func TestApolloConfigWatcher_StartStopIdempotent(t *testing.T) {
 	watcher := NewApolloConfigWatcher(client, conf.DefaultNamespace)
 	watcher.notificationTimeout = 20 * time.Millisecond
 
-	watcher.Start()
-	watcher.Start()
+	assert.NoError(t, watcher.Start(context.Background()))
+	assert.NoError(t, watcher.Start(context.Background()))
 	assert.NoError(t, watcher.Stop())
 	assert.NoError(t, watcher.Stop())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&watcher.closed))
@@ -290,6 +290,54 @@ func TestApolloConfigWatcher_StartStopIdempotent(t *testing.T) {
 	assert.Nil(t, kvs)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "watcher stopped")
+}
+
+// TestApolloConfigWatcher_StartWithLifecycleCtx verifies that cancelling the
+// context passed to Start stops the watch loop without requiring an explicit
+// Stop call.
+func TestApolloConfigWatcher_StartWithLifecycleCtx(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	requestCanceled := make(chan struct{}, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/notifications/v2") {
+			select {
+			case requestStarted <- struct{}{}:
+			default:
+			}
+			// Block until the request context is cancelled.
+			<-r.Context().Done()
+			select {
+			case requestCanceled <- struct{}{}:
+			default:
+			}
+			return
+		}
+		// Ignore other paths (e.g. meta-server lookup).
+	}))
+	defer server.Close()
+
+	client := NewApolloHTTPClient(server.URL, "test-app", "default", "application", "", time.Minute)
+	client.configServer = server.URL
+	watcher := NewApolloConfigWatcher(client, "application")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	assert.NoError(t, watcher.Start(ctx))
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected long-poll request to start")
+	}
+
+	// Cancelling the lifecycle ctx should propagate to the in-flight request.
+	cancel()
+
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("expected lifecycle ctx cancellation to cancel the in-flight watch request")
+	}
 }
 
 // TestNewRetryManager tests retry manager creation
@@ -520,7 +568,7 @@ func TestApolloConfigWatcher_StopCancelsInflightLongPoll(t *testing.T) {
 	client := NewApolloHTTPClient(server.URL, "test-app", "default", "application", "", time.Minute)
 	client.configServer = server.URL
 	watcher := NewApolloConfigWatcher(client, "application")
-	watcher.Start()
+	assert.NoError(t, watcher.Start(context.Background()))
 
 	select {
 	case <-requestStarted:

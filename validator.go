@@ -14,7 +14,7 @@ import (
 type ValidationError struct {
 	Field   string
 	Message string
-	Value   interface{}
+	Value   any
 }
 
 func (e *ValidationError) Error() string {
@@ -36,7 +36,7 @@ func NewValidationResult() *ValidationResult {
 }
 
 // AddError adds error
-func (r *ValidationResult) AddError(field, message string, value interface{}) {
+func (r *ValidationResult) AddError(field, message string, value any) {
 	r.IsValid = false
 	r.Errors = append(r.Errors, &ValidationError{
 		Field:   field,

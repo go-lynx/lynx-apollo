@@ -115,7 +115,8 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 	p.configWatchers[namespace] = watcher
 	p.watcherMutex.Unlock()
 
-	// Start watching
+	// Start watching. ConfigWatcher.Start() is a fire-and-forget; lifecycle
+	// cleanup is handled by CleanupTasks closing the watcher's stop channel.
 	watcher.Start()
 
 	return watcher, nil
@@ -151,8 +152,14 @@ func (p *PlugApollo) handleConfigWatchError(namespace string, err error) {
 	}
 }
 
-// retryConfigWatch retries configuration watching
+// retryConfigWatch retries configuration watching after an error.
+// It runs in a separate goroutine; panic recovery prevents silent failure.
 func (p *PlugApollo) retryConfigWatch(namespace string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("Unexpected panic in retryConfigWatch for namespace %s: %v", namespace, r)
+		}
+	}()
 	log.Infof("Retrying config watch for %s", namespace)
 
 	// Wait for a period before retrying, but allow cancellation on plugin stop

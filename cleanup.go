@@ -52,7 +52,7 @@ func (p *PlugApollo) closeClientConnection() {
 		log.Infof("Closing Apollo HTTP client connection")
 
 		// Get client information
-		clientInfo := map[string]interface{}{
+		clientInfo := map[string]any{
 			"client_type": "ApolloHTTPClient",
 		}
 		if p.conf != nil {
@@ -106,7 +106,7 @@ func (p *PlugApollo) releaseMemoryResources() {
 func (p *PlugApollo) clearConfigCache() {
 	p.cacheMutex.Lock()
 	defer p.cacheMutex.Unlock()
-	p.configCache = make(map[string]interface{})
+	p.configCache = make(map[string]any)
 	log.Infof("Configuration cache cleared")
 }
 
@@ -141,14 +141,14 @@ func (p *PlugApollo) stopBackgroundTasks() {
 }
 
 // getCleanupStats gets cleanup statistics
-func (p *PlugApollo) getCleanupStats() map[string]interface{} {
-	stats := map[string]interface{}{
+func (p *PlugApollo) getCleanupStats() map[string]any {
+	stats := map[string]any{
 		"cleanup_time": time.Now().Unix(),
-		"plugin_state": map[string]interface{}{
+		"plugin_state": map[string]any{
 			"initialized": p.IsInitialized(),
 			"destroyed":   p.IsDestroyed(),
 		},
-		"resources": map[string]interface{}{
+		"resources": map[string]any{
 			"client_closed":   p.client == nil,
 			"metrics_cleared": p.metrics == nil,
 			"retry_cleared":   p.retryManager == nil,
