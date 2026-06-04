@@ -14,8 +14,12 @@ func (p *PlugApollo) CheckHealth() error {
 		return err
 	}
 
-	// Check Apollo client
-	if p.client == nil {
+	// Check Apollo client under the lock so a concurrent shutdown (which nils
+	// p.client) cannot cause a data race or nil dereference.
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
 		return NewInitError("Apollo client is nil")
 	}
 
@@ -25,19 +29,27 @@ func (p *PlugApollo) CheckHealth() error {
 
 // checkApolloHealth checks the health of the Apollo configuration center.
 func (p *PlugApollo) checkApolloHealth() error {
+	// Snapshot shared components under the lock so a concurrent shutdown cannot
+	// race or nil them out from under us.
+	p.mu.RLock()
+	metrics := p.metrics
+	retryManager := p.retryManager
+	circuitBreaker := p.circuitBreaker
+	p.mu.RUnlock()
+
 	// Record the start of the health check
 	success := false
-	if p.metrics != nil {
-		p.metrics.RecordHealthCheck("start")
+	if metrics != nil {
+		metrics.RecordHealthCheck("start")
 		defer func() {
-			if success && p.metrics != nil {
-				p.metrics.RecordHealthCheck("success")
+			if success && metrics != nil {
+				metrics.RecordHealthCheck("success")
 			}
 		}()
 	}
 
 	log.Infof("Checking Apollo configuration center health")
-	if p.circuitBreaker == nil || p.retryManager == nil {
+	if circuitBreaker == nil || retryManager == nil {
 		return NewHealthCheckError("Apollo resilience components are not initialized")
 	}
 
@@ -46,7 +58,7 @@ func (p *PlugApollo) checkApolloHealth() error {
 	// deadlock (the channel-based mutex is not re-entrant).  Run the checks
 	// directly via the retry manager only.
 	var healthErr error
-	err := p.retryManager.DoWithRetry(func() error {
+	err := retryManager.DoWithRetry(func() error {
 		// 1) Check client connection status
 		if err := p.checkClientConnection(); err != nil {
 			healthErr = err
@@ -64,8 +76,8 @@ func (p *PlugApollo) checkApolloHealth() error {
 
 	if err != nil {
 		log.Errorf("Apollo configuration center health check failed: %v", healthErr)
-		if p.metrics != nil {
-			p.metrics.RecordHealthCheck("error")
+		if metrics != nil {
+			metrics.RecordHealthCheck("error")
 		}
 		return WrapClientError(healthErr, ErrCodeHealthCheckFailed, "Apollo configuration center health check failed")
 	}

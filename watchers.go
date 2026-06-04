@@ -1,6 +1,7 @@
 package apollo
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -8,7 +9,12 @@ import (
 	"github.com/go-lynx/lynx/log"
 )
 
-// ConfigWatcher watches Apollo configuration changes
+// ConfigWatcher watches Apollo configuration changes.
+//
+// It is a thin lifecycle wrapper around a real ApolloConfigWatcher: Start()
+// kicks off a tracked long-poll watcher (when a client is available) plus a
+// dispatch goroutine that fans notifications out to the onChange callback.
+// Stop() tears both down.  This replaces the previous dead no-op Start().
 type ConfigWatcher struct {
 	namespace string
 	onChange  func(namespace string, key string, value string)
@@ -16,6 +22,17 @@ type ConfigWatcher struct {
 	stopCh    chan struct{}
 	mu        sync.RWMutex
 	metrics   *Metrics
+
+	// client and ctx back the real ApolloConfigWatcher.  client may be nil
+	// (e.g. in tests / before the plugin client is initialised), in which case
+	// no long-poll watcher is started but Start()/Stop() remain valid no-ops.
+	client *ApolloHTTPClient
+	ctx    context.Context
+
+	apolloWatcher *ApolloConfigWatcher
+	wg            sync.WaitGroup
+	startOnce     sync.Once
+	stopOnce      sync.Once
 }
 
 // NewConfigWatcher creates a new configuration watcher
@@ -23,6 +40,7 @@ func NewConfigWatcher(namespace string) *ConfigWatcher {
 	return &ConfigWatcher{
 		namespace: namespace,
 		stopCh:    make(chan struct{}),
+		ctx:       context.Background(),
 	}
 }
 
@@ -40,28 +58,102 @@ func (w *ConfigWatcher) SetOnError(callback func(err error)) {
 	w.onError = callback
 }
 
-// Start starts watching configuration changes
-// Note: This is a legacy method for backward compatibility.
-// The actual watching is handled by ApolloConfigWatcher which implements config.Watcher.
+// Start starts watching configuration changes.
+//
+// When backed by a client it spins up a real, tracked ApolloConfigWatcher and
+// a dispatch goroutine that forwards each reloaded key/value to the onChange
+// callback.  Both are torn down by Stop().  When no client is configured this
+// is effectively a no-op (but still safe to call and Stop()).
 func (w *ConfigWatcher) Start() {
-	// This method is kept for backward compatibility
-	// The actual watching is done through ApolloConfigWatcher
-	log.Infof("Config watcher started for namespace: %s (using ApolloConfigWatcher)", w.namespace)
+	w.startOnce.Do(func() {
+		w.mu.RLock()
+		client := w.client
+		ctx := w.ctx
+		w.mu.RUnlock()
+
+		if client == nil {
+			log.Infof("Config watcher started for namespace: %s (no client; dispatch disabled)", w.namespace)
+			return
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+
+		aw := NewApolloConfigWatcher(client, w.namespace)
+		w.mu.Lock()
+		w.apolloWatcher = aw
+		w.mu.Unlock()
+
+		if err := aw.Start(ctx); err != nil {
+			w.mu.RLock()
+			onError := w.onError
+			w.mu.RUnlock()
+			if onError != nil {
+				onError(err)
+			}
+			log.Errorf("Failed to start Apollo config watcher for namespace %s: %v", w.namespace, err)
+			return
+		}
+
+		w.wg.Add(1)
+		go w.dispatchLoop(aw)
+		log.Infof("Config watcher started for namespace: %s (backed by ApolloConfigWatcher)", w.namespace)
+	})
+}
+
+// dispatchLoop pulls config changes from the underlying ApolloConfigWatcher and
+// fans them out to the onChange/onError callbacks until the watcher is stopped.
+func (w *ConfigWatcher) dispatchLoop(aw *ApolloConfigWatcher) {
+	defer w.wg.Done()
+	for {
+		select {
+		case <-w.stopCh:
+			return
+		default:
+		}
+
+		kvs, err := aw.Next()
+		if err != nil {
+			// Next returns an error once the watcher is stopped.
+			select {
+			case <-w.stopCh:
+				return
+			default:
+			}
+			w.mu.RLock()
+			onError := w.onError
+			w.mu.RUnlock()
+			if onError != nil {
+				onError(err)
+			}
+			return
+		}
+
+		w.mu.RLock()
+		onChange := w.onChange
+		w.mu.RUnlock()
+		if onChange != nil {
+			for _, kv := range kvs {
+				onChange(w.namespace, kv.Key, string(kv.Value))
+			}
+		}
+	}
 }
 
 // Stop stops watching configuration changes
 func (w *ConfigWatcher) Stop() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	select {
-	case <-w.stopCh:
-		// Already stopped
-		return
-	default:
+	w.stopOnce.Do(func() {
 		close(w.stopCh)
+
+		w.mu.RLock()
+		aw := w.apolloWatcher
+		w.mu.RUnlock()
+		if aw != nil {
+			_ = aw.Stop()
+		}
+		w.wg.Wait()
 		log.Infof("Stopped config watcher for namespace: %s", w.namespace)
-	}
+	})
 }
 
 // WatchConfig watches configuration changes
@@ -70,13 +162,17 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 		return nil, NewInitError("Apollo plugin not initialized")
 	}
 
+	// Snapshot the shared metrics under the lock so a concurrent shutdown
+	// (which may nil it) cannot cause a data race or nil dereference.
+	p.mu.RLock()
+	metrics := p.metrics
+	p.mu.RUnlock()
+
 	// Record configuration watch operation metrics
-	if p.metrics != nil {
-		p.metrics.RecordConfigOperation(namespace, "watch", "start")
+	if metrics != nil {
+		metrics.RecordConfigOperation(namespace, "watch", "start")
 		defer func() {
-			if p.metrics != nil {
-				p.metrics.RecordConfigOperation(namespace, "watch", "success")
-			}
+			metrics.RecordConfigOperation(namespace, "watch", "success")
 		}()
 	}
 
@@ -91,9 +187,16 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 	}
 	p.watcherMutex.RUnlock()
 
-	// Create configuration watcher
+	// Create configuration watcher backed by a real ApolloConfigWatcher.
+	// Snapshot the shared client under the lock so a concurrent shutdown
+	// cannot race it.
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+
 	watcher := NewConfigWatcher(namespace)
-	watcher.metrics = p.metrics // Pass metrics reference
+	watcher.metrics = metrics // Pass metrics reference
+	watcher.client = client   // Back the watcher with the real Apollo client
 
 	// Set event handling callbacks
 	watcher.SetOnConfigChanged(func(ns string, key string, value string) {
@@ -126,9 +229,13 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 func (p *PlugApollo) handleConfigChanged(namespace, key, value string) {
 	log.Infof("Config changed - Namespace: [%s], Key: [%s]", namespace, key)
 
-	// Record configuration change metrics
-	if p.metrics != nil {
-		p.metrics.RecordConfigChange(namespace)
+	// Record configuration change metrics. Snapshot the metrics pointer under
+	// the lock so a concurrent shutdown cannot race or nil it out.
+	p.mu.RLock()
+	metrics := p.metrics
+	p.mu.RUnlock()
+	if metrics != nil {
+		metrics.RecordConfigChange(namespace)
 	}
 
 	// Clear cache for this namespace
@@ -141,9 +248,13 @@ func (p *PlugApollo) handleConfigChanged(namespace, key, value string) {
 func (p *PlugApollo) handleConfigWatchError(namespace string, err error) {
 	log.Errorf("Config watch error - Namespace: [%s], Error: %v", namespace, err)
 
-	// Record error metrics
-	if p.metrics != nil {
-		p.metrics.RecordConfigOperation(namespace, "watch", "error")
+	// Record error metrics. Snapshot the metrics pointer under the lock so a
+	// concurrent shutdown cannot race or nil it out.
+	p.mu.RLock()
+	metrics := p.metrics
+	p.mu.RUnlock()
+	if metrics != nil {
+		metrics.RecordConfigOperation(namespace, "watch", "error")
 	}
 
 	// Retry watching if needed

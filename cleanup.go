@@ -46,9 +46,17 @@ func (p *PlugApollo) cleanupWatchers() {
 	log.Infof("Cleaned up %d config watchers", configWatcherCount)
 }
 
-// closeClientConnection closes client connection
+// closeClientConnection closes client connection.
+// p.client is read concurrently by CheckHealth/GetConfig/getConfigValueFromApollo,
+// so the swap-to-nil must be performed under p.mu to avoid a data race and a
+// nil dereference during shutdown.
 func (p *PlugApollo) closeClientConnection() {
-	if p.client != nil {
+	p.mu.Lock()
+	client := p.client
+	p.client = nil
+	p.mu.Unlock()
+
+	if client != nil {
 		log.Infof("Closing Apollo HTTP client connection")
 
 		// Get client information
@@ -62,10 +70,9 @@ func (p *PlugApollo) closeClientConnection() {
 		}
 
 		// Close HTTP client
-		p.client.Close()
+		client.Close()
 
 		log.Infof("Apollo HTTP client connection closed: %+v", clientInfo)
-		p.client = nil
 	}
 }
 
@@ -79,21 +86,28 @@ func (p *PlugApollo) releaseMemoryResources() {
 		// Don't set to nil, just clear sensitive fields if needed
 	}
 
-	// Clear enhanced components
-	if p.metrics != nil {
+	// Clear enhanced components.  These fields are read concurrently by
+	// CheckHealth/GetConfigValue, so swap them to nil under p.mu to avoid a
+	// data race and nil dereference during shutdown.  ForceClose() is called on
+	// the local reference outside the lock.
+	p.mu.Lock()
+	metrics := p.metrics
+	retryManager := p.retryManager
+	circuitBreaker := p.circuitBreaker
+	p.metrics = nil
+	p.retryManager = nil
+	p.circuitBreaker = nil
+	p.mu.Unlock()
+
+	if metrics != nil {
 		log.Infof("Clearing metrics")
-		p.metrics = nil
 	}
-
-	if p.retryManager != nil {
+	if retryManager != nil {
 		log.Infof("Clearing retry manager")
-		p.retryManager = nil
 	}
-
-	if p.circuitBreaker != nil {
+	if circuitBreaker != nil {
 		log.Infof("Clearing circuit breaker")
-		p.circuitBreaker.ForceClose()
-		p.circuitBreaker = nil
+		circuitBreaker.ForceClose()
 	}
 
 	// Clear cache
@@ -110,26 +124,34 @@ func (p *PlugApollo) clearConfigCache() {
 	log.Infof("Configuration cache cleared")
 }
 
-// stopBackgroundTasks stops background tasks
+// stopBackgroundTasks stops background tasks.
+// retryManager/metrics are read concurrently, so swap them to nil under p.mu.
+// The circuit breaker reference is intentionally kept (just ForceClose()'d).
 func (p *PlugApollo) stopBackgroundTasks() {
 	log.Infof("Stopping background tasks")
 
+	p.mu.Lock()
+	retryManager := p.retryManager
+	circuitBreaker := p.circuitBreaker
+	metrics := p.metrics
+	p.retryManager = nil
+	p.metrics = nil
+	p.mu.Unlock()
+
 	// Stop retry tasks
-	if p.retryManager != nil {
+	if retryManager != nil {
 		log.Infof("Stopping retry manager background tasks")
-		p.retryManager = nil
 	}
 
 	// Stop circuit breaker tasks
-	if p.circuitBreaker != nil {
+	if circuitBreaker != nil {
 		log.Infof("Stopping circuit breaker background tasks")
-		p.circuitBreaker.ForceClose()
+		circuitBreaker.ForceClose()
 	}
 
 	// Stop metrics collection tasks
-	if p.metrics != nil {
+	if metrics != nil {
 		log.Infof("Stopping metrics collection tasks")
-		p.metrics = nil
 	}
 
 	// Stop other background tasks
@@ -142,6 +164,13 @@ func (p *PlugApollo) stopBackgroundTasks() {
 
 // getCleanupStats gets cleanup statistics
 func (p *PlugApollo) getCleanupStats() map[string]any {
+	p.mu.RLock()
+	clientNil := p.client == nil
+	metricsNil := p.metrics == nil
+	retryNil := p.retryManager == nil
+	breakerNil := p.circuitBreaker == nil
+	p.mu.RUnlock()
+
 	stats := map[string]any{
 		"cleanup_time": time.Now().Unix(),
 		"plugin_state": map[string]any{
@@ -149,10 +178,10 @@ func (p *PlugApollo) getCleanupStats() map[string]any {
 			"destroyed":   p.IsDestroyed(),
 		},
 		"resources": map[string]any{
-			"client_closed":   p.client == nil,
-			"metrics_cleared": p.metrics == nil,
-			"retry_cleared":   p.retryManager == nil,
-			"breaker_cleared": p.circuitBreaker == nil,
+			"client_closed":   clientNil,
+			"metrics_cleared": metricsNil,
+			"retry_cleared":   retryNil,
+			"breaker_cleared": breakerNil,
 		},
 	}
 
