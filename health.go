@@ -41,24 +41,25 @@ func (p *PlugApollo) checkApolloHealth() error {
 		return NewHealthCheckError("Apollo resilience components are not initialized")
 	}
 
-	// Execute health checks using circuit breaker and retry mechanisms
+	// checkClientConnection internally calls GetConfigValue which goes through the
+	// circuit breaker — wrapping it in another circuitBreaker.Do would cause a
+	// deadlock (the channel-based mutex is not re-entrant).  Run the checks
+	// directly via the retry manager only.
 	var healthErr error
-	err := p.circuitBreaker.Do(func() error {
-		return p.retryManager.DoWithRetry(func() error {
-			// 1) Check client connection status
-			if err := p.checkClientConnection(); err != nil {
-				healthErr = err
-				return err
-			}
+	err := p.retryManager.DoWithRetry(func() error {
+		// 1) Check client connection status
+		if err := p.checkClientConnection(); err != nil {
+			healthErr = err
+			return err
+		}
 
-			// 2) Check configuration management functionality
-			if err := p.checkConfigManagementHealth(); err != nil {
-				healthErr = err
-				return err
-			}
+		// 2) Check configuration management functionality
+		if err := p.checkConfigManagementHealth(); err != nil {
+			healthErr = err
+			return err
+		}
 
-			return nil
-		})
+		return nil
 	})
 
 	if err != nil {
