@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// ErrorCode error code type
+// ErrorCode is a stable, machine-readable classification for an ApolloError.
 type ErrorCode string
 
 // Error code constants
@@ -21,7 +21,7 @@ const (
 	ErrCodeNotInitialized     ErrorCode = "NOT_INITIALIZED"
 
 	// ErrCodeClientFailed Client related errors
-	ErrCodeClientFailed  ErrorCode = "CLIENT_FAILED"
+	ErrCodeClientFailed     ErrorCode = "CLIENT_FAILED"
 	ErrCodeClientInitFailed ErrorCode = "CLIENT_INIT_FAILED"
 	ErrCodeClientDestroyed  ErrorCode = "CLIENT_DESTROYED"
 
@@ -31,7 +31,7 @@ const (
 	ErrCodeConfigWatchFailed ErrorCode = "CONFIG_WATCH_FAILED"
 
 	// ErrCodeNotificationFailed Notification related errors
-	ErrCodeNotificationFailed ErrorCode = "NOTIFICATION_FAILED"
+	ErrCodeNotificationFailed  ErrorCode = "NOTIFICATION_FAILED"
 	ErrCodeNotificationTimeout ErrorCode = "NOTIFICATION_TIMEOUT"
 
 	// ErrCodeHealthCheckFailed Health check related errors
@@ -55,7 +55,8 @@ const (
 	ErrCodeShutdownTimeout ErrorCode = "SHUTDOWN_TIMEOUT"
 )
 
-// ApolloError Apollo plugin error
+// ApolloError is the plugin's structured error carrying a code, message,
+// wrapped cause, and arbitrary context for diagnostics.
 type ApolloError struct {
 	Code    ErrorCode
 	Message string
@@ -88,18 +89,13 @@ func (e *ApolloError) WithContext(key string, value any) *ApolloError {
 func (e *ApolloError) Error() string {
 	var parts []string
 
-	// Add error code
 	parts = append(parts, fmt.Sprintf("[%s]", e.Code))
-
-	// Add error message
 	parts = append(parts, e.Message)
 
-	// Add cause
 	if e.Cause != nil {
 		parts = append(parts, fmt.Sprintf("caused by: %v", e.Cause))
 	}
 
-	// Add context
 	if len(e.Context) > 0 {
 		var contextParts []string
 		for k, v := range e.Context {
@@ -116,7 +112,8 @@ func (e *ApolloError) Unwrap() error {
 	return e.Cause
 }
 
-// Is checks error type
+// Is reports whether target is an ApolloError with the same code, enabling
+// errors.Is matching by category.
 func (e *ApolloError) Is(target error) bool {
 	if targetError, ok := target.(*ApolloError); ok {
 		return e.Code == targetError.Code
@@ -188,7 +185,6 @@ func IsRetryError(err error) bool {
 	return isErrorCode(err, ErrCodeRetryExhausted, ErrCodeCircuitBreakerOpen)
 }
 
-// isErrorCode checks error code
 func isErrorCode(err error, codes ...ErrorCode) bool {
 	if apolloErr, ok := err.(*ApolloError); ok {
 		for _, code := range codes {
@@ -226,4 +222,3 @@ func WrapClientError(err error, code ErrorCode, message string) *ApolloError {
 func WrapNetworkError(err error, message string) *ApolloError {
 	return WrapError(err, ErrCodeNetworkError, message)
 }
-

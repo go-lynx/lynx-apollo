@@ -10,7 +10,7 @@ import (
 	"github.com/go-lynx/lynx-apollo/conf"
 )
 
-// ValidationError configuration validation error
+// ValidationError records one failed field check.
 type ValidationError struct {
 	Field   string
 	Message string
@@ -21,13 +21,12 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("validation error for field '%s': %s (value: %v)", e.Field, e.Message, e.Value)
 }
 
-// ValidationResult validation result
+// ValidationResult accumulates field errors; IsValid is false once any is added.
 type ValidationResult struct {
 	IsValid bool
 	Errors  []*ValidationError
 }
 
-// NewValidationResult creates validation result
 func NewValidationResult() *ValidationResult {
 	return &ValidationResult{
 		IsValid: true,
@@ -35,7 +34,7 @@ func NewValidationResult() *ValidationResult {
 	}
 }
 
-// AddError adds error
+// AddError appends a field error and marks the result invalid.
 func (r *ValidationResult) AddError(field, message string, value any) {
 	r.IsValid = false
 	r.Errors = append(r.Errors, &ValidationError{
@@ -58,19 +57,19 @@ func (r *ValidationResult) Error() string {
 	return strings.Join(messages, "; ")
 }
 
-// Validator configuration validator
+// Validator checks an Apollo config against required fields, value ranges,
+// enums, time bounds, and cross-field dependencies.
 type Validator struct {
 	config *conf.Apollo
 }
 
-// NewValidator creates new validator
 func NewValidator(config *conf.Apollo) *Validator {
 	return &Validator{
 		config: config,
 	}
 }
 
-// Validate validates configuration
+// Validate runs all checks and returns the accumulated result.
 func (v *Validator) Validate() *ValidationResult {
 	result := NewValidationResult()
 	if v == nil || v.config == nil {
@@ -79,25 +78,12 @@ func (v *Validator) Validate() *ValidationResult {
 	}
 	v.applyImplicitDefaults()
 
-	// Validate basic fields
 	v.validateBasicFields(result)
-
-	// Validate numeric ranges
 	v.validateNumericRanges(result)
-
-	// Validate enum values
 	v.validateEnumValues(result)
-
-	// Validate time-related configurations
 	v.validateTimeConfigs(result)
-
-	// Validate dependencies
 	v.validateDependencies(result)
-
-	// Additional: validate security-related configurations
 	v.validateSecurityConfigs(result)
-
-	// Additional: validate network-related configurations
 	v.validateNetworkConfigs(result)
 
 	return result
@@ -112,43 +98,37 @@ func (v *Validator) applyImplicitDefaults() {
 	}
 }
 
-// validateBasicFields validates basic fields
 func (v *Validator) validateBasicFields(result *ValidationResult) {
-	// Validate app_id (required)
+	// app_id is required; max 128 chars; only [a-zA-Z0-9_-].
 	if v.config.AppId == "" {
 		result.AddError("app_id", "app_id cannot be empty", v.config.AppId)
 	} else if len(v.config.AppId) > 128 {
 		result.AddError("app_id", "app_id length must not exceed 128 characters", v.config.AppId)
 	} else {
-		// Validate app_id format (only letters, numbers, underscores, and hyphens allowed)
 		appIdRegex := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 		if !appIdRegex.MatchString(v.config.AppId) {
 			result.AddError("app_id", "app_id can only contain letters, numbers, underscores, and hyphens", v.config.AppId)
 		}
 	}
 
-	// Validate meta_server (required)
+	// meta_server is required and must be a parseable URL.
 	if v.config.MetaServer == "" {
 		result.AddError("meta_server", "meta_server cannot be empty", v.config.MetaServer)
 	} else {
-		// Validate URL format
 		_, err := url.Parse(v.config.MetaServer)
 		if err != nil {
 			result.AddError("meta_server", fmt.Sprintf("meta_server must be a valid URL: %v", err), v.config.MetaServer)
 		}
 	}
 
-	// Validate cluster
 	if v.config.Cluster != "" && len(v.config.Cluster) > 64 {
 		result.AddError("cluster", "cluster length must not exceed 64 characters", v.config.Cluster)
 	}
 
-	// Validate namespace
 	if v.config.Namespace != "" && len(v.config.Namespace) > 128 {
 		result.AddError("namespace", "namespace length must not exceed 128 characters", v.config.Namespace)
 	}
 
-	// Validate token (if provided)
 	if v.config.Token != "" && len(v.config.Token) > 1024 {
 		result.AddError("token", "token length must not exceed 1024 characters", v.config.Token)
 	}
@@ -156,28 +136,22 @@ func (v *Validator) validateBasicFields(result *ValidationResult) {
 		result.AddError("token", "token must be at least 8 characters long", v.config.Token)
 	}
 
-	// Validate cache_dir
 	if v.config.CacheDir != "" && len(v.config.CacheDir) > 512 {
 		result.AddError("cache_dir", "cache_dir length must not exceed 512 characters", v.config.CacheDir)
 	}
 }
 
-// validateNumericRanges validates numeric ranges
 func (v *Validator) validateNumericRanges(result *ValidationResult) {
-	// Validate max_retry_times
 	if v.config.MaxRetryTimes < conf.MinRetryTimes || v.config.MaxRetryTimes > conf.MaxRetryTimes {
 		result.AddError("max_retry_times", fmt.Sprintf("max_retry_times must be between %d and %d", conf.MinRetryTimes, conf.MaxRetryTimes), v.config.MaxRetryTimes)
 	}
 
-	// Validate circuit_breaker_threshold
 	if v.config.CircuitBreakerThreshold < conf.MinCircuitBreakerThreshold || v.config.CircuitBreakerThreshold > conf.MaxCircuitBreakerThreshold {
 		result.AddError("circuit_breaker_threshold", fmt.Sprintf("circuit_breaker_threshold must be between %.1f and %.1f", conf.MinCircuitBreakerThreshold, conf.MaxCircuitBreakerThreshold), v.config.CircuitBreakerThreshold)
 	}
 }
 
-// validateEnumValues validates enum values
 func (v *Validator) validateEnumValues(result *ValidationResult) {
-	// Validate log_level
 	if v.config.LogLevel != "" {
 		valid := false
 		for _, level := range conf.SupportedLogLevels {
@@ -191,7 +165,6 @@ func (v *Validator) validateEnumValues(result *ValidationResult) {
 		}
 	}
 
-	// Validate merge_strategy in service_config
 	if v.config.ServiceConfig != nil && v.config.ServiceConfig.MergeStrategy != "" {
 		valid := false
 		for _, strategy := range conf.SupportedMergeStrategies {
@@ -206,9 +179,7 @@ func (v *Validator) validateEnumValues(result *ValidationResult) {
 	}
 }
 
-// validateTimeConfigs validates time-related configurations
 func (v *Validator) validateTimeConfigs(result *ValidationResult) {
-	// Validate timeout
 	if v.config.Timeout != nil {
 		timeout := time.Duration(v.config.Timeout.Seconds) * time.Second
 		if timeout < time.Duration(conf.MinTimeoutSeconds)*time.Second || timeout > time.Duration(conf.MaxTimeoutSeconds)*time.Second {
@@ -216,7 +187,6 @@ func (v *Validator) validateTimeConfigs(result *ValidationResult) {
 		}
 	}
 
-	// Validate notification_timeout
 	if v.config.NotificationTimeout != nil {
 		timeout := time.Duration(v.config.NotificationTimeout.Seconds) * time.Second
 		if timeout < time.Duration(conf.MinNotificationTimeoutSeconds)*time.Second || timeout > time.Duration(conf.MaxNotificationTimeoutSeconds)*time.Second {
@@ -224,7 +194,6 @@ func (v *Validator) validateTimeConfigs(result *ValidationResult) {
 		}
 	}
 
-	// Validate retry_interval
 	if v.config.RetryInterval != nil {
 		interval := time.Duration(v.config.RetryInterval.Seconds) * time.Second
 		if interval < conf.MinRetryInterval || interval > conf.MaxRetryInterval {
@@ -232,7 +201,6 @@ func (v *Validator) validateTimeConfigs(result *ValidationResult) {
 		}
 	}
 
-	// Validate shutdown_timeout
 	if v.config.ShutdownTimeout != nil {
 		timeout := time.Duration(v.config.ShutdownTimeout.Seconds) * time.Second
 		if timeout < conf.MinShutdownTimeout || timeout > conf.MaxShutdownTimeout {
@@ -241,9 +209,9 @@ func (v *Validator) validateTimeConfigs(result *ValidationResult) {
 	}
 }
 
-// validateDependencies validates dependencies
 func (v *Validator) validateDependencies(result *ValidationResult) {
-	// Validate coordination between timeout and notification_timeout
+	// timeout must be shorter than notification_timeout: a per-request timeout
+	// at or above the long-poll window would cut off notifications prematurely.
 	if v.config.Timeout != nil && v.config.NotificationTimeout != nil {
 		timeout := time.Duration(v.config.Timeout.Seconds) * time.Second
 		notificationTimeout := time.Duration(v.config.NotificationTimeout.Seconds) * time.Second
@@ -253,23 +221,19 @@ func (v *Validator) validateDependencies(result *ValidationResult) {
 		}
 	}
 
-	// Validate cache_dir when enable_cache is true
 	if v.config.EnableCache && v.config.CacheDir == "" {
 		result.AddError("cache_dir", "cache_dir must be set when enable_cache is true", v.config.CacheDir)
 	}
 }
 
-// validateSecurityConfigs validates security-related configurations
 func (v *Validator) validateSecurityConfigs(result *ValidationResult) {
-	// Validate token security
 	if v.config.Token != "" {
-		// Check token length
 		if len(v.config.Token) < 8 {
 			result.AddError("token", "token must be at least 8 characters long for security", v.config.Token)
 		}
 	}
 
-	// Validate meta_server security (should use HTTPS in production)
+	// Flag plain-HTTP meta servers: production deployments should use HTTPS.
 	if v.config.MetaServer != "" {
 		parsedURL, err := url.Parse(v.config.MetaServer)
 		if err == nil && parsedURL.Scheme == "http" {
@@ -278,9 +242,8 @@ func (v *Validator) validateSecurityConfigs(result *ValidationResult) {
 	}
 }
 
-// validateNetworkConfigs validates network-related configurations
 func (v *Validator) validateNetworkConfigs(result *ValidationResult) {
-	// Validate connection timeout configuration
+	// Network timeout sanity bounds: 100ms .. 30s.
 	if v.config.Timeout != nil {
 		timeout := v.config.Timeout.AsDuration()
 		if timeout < 100*time.Millisecond {
@@ -291,7 +254,6 @@ func (v *Validator) validateNetworkConfigs(result *ValidationResult) {
 		}
 	}
 
-	// Validate retry configuration
 	if v.config.MaxRetryTimes < 0 {
 		result.AddError("max_retry_times", "max_retry_times cannot be negative", v.config.MaxRetryTimes)
 	}
@@ -300,7 +262,8 @@ func (v *Validator) validateNetworkConfigs(result *ValidationResult) {
 	}
 }
 
-// ValidateConfig convenient configuration validation function
+// ValidateConfig validates config and returns the first failure as an error,
+// or nil if the config is valid.
 func ValidateConfig(config *conf.Apollo) error {
 	validator := NewValidator(config)
 	result := validator.Validate()

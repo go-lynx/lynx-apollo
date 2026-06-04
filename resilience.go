@@ -9,24 +9,25 @@ import (
 	"github.com/go-lynx/lynx/log"
 )
 
-// RetryManager retry manager
-// Provides exponential backoff retry mechanism
+// RetryManager retries an operation with exponential backoff, up to maxRetries
+// times, capped at 30s per backoff (see calculateBackoff).
 type RetryManager struct {
 	maxRetries    int
 	retryInterval time.Duration
 	backoffFactor float64
 }
 
-// NewRetryManager creates new retry manager
 func NewRetryManager(maxRetries int, retryInterval time.Duration) *RetryManager {
 	return &RetryManager{
 		maxRetries:    maxRetries,
 		retryInterval: retryInterval,
-		backoffFactor: 2.0, // Exponential backoff factor
+		backoffFactor: 2.0,
 	}
 }
 
-// DoWithRetry executes operation with retry
+// DoWithRetry runs operation, retrying with backoff until it succeeds or
+// maxRetries is exhausted. The backoff sleep blocks; use DoWithRetryContext for
+// cancellable waits.
 func (r *RetryManager) DoWithRetry(operation func() error) error {
 	var lastErr error
 
@@ -39,7 +40,6 @@ func (r *RetryManager) DoWithRetry(operation func() error) error {
 		} else {
 			lastErr = err
 			if attempt < r.maxRetries {
-				// Calculate backoff time
 				backoffTime := r.calculateBackoff(attempt)
 				log.Warnf("Operation failed (attempt %d/%d): %v, retrying in %v",
 					attempt+1, r.maxRetries+1, err, backoffTime)
@@ -86,12 +86,10 @@ func (r *RetryManager) DoWithRetryContext(ctx context.Context, operation func() 
 	return fmt.Errorf("operation failed after %d attempts, last error: %w", r.maxRetries+1, lastErr)
 }
 
-// calculateBackoff calculates backoff time
+// calculateBackoff returns retryInterval * backoffFactor^attempt, capped at 30s.
 func (r *RetryManager) calculateBackoff(attempt int) time.Duration {
-	// Exponential backoff: base * factor^attempt
 	backoffSeconds := float64(r.retryInterval) * math.Pow(r.backoffFactor, float64(attempt))
 
-	// Limit maximum backoff time to 30 seconds
 	maxBackoff := 30 * time.Second
 	if time.Duration(backoffSeconds) > maxBackoff {
 		return maxBackoff
@@ -106,8 +104,9 @@ func (r *RetryManager) calculateBackoff(attempt int) time.Duration {
 // accumulating over the lifetime of the process.
 const circuitWindow = 60 * time.Second
 
-// CircuitBreaker circuit breaker
-// Implements simple circuit breaker protection mechanism
+// CircuitBreaker trips open when the failure rate over a rolling window reaches
+// threshold, blocking calls until a half-open probe succeeds. The mu channel is
+// used as a non-reentrant mutex (see Do).
 type CircuitBreaker struct {
 	threshold float64
 	// failures/successes hold the timestamps of recent outcomes within the
@@ -128,12 +127,12 @@ const (
 	CircuitStateHalfOpen                     // Half-open state: attempting recovery
 )
 
-// NewCircuitBreaker creates new circuit breaker
+// NewCircuitBreaker returns a closed breaker that opens at the given failure-rate threshold.
 func NewCircuitBreaker(threshold float64) *CircuitBreaker {
 	return &CircuitBreaker{
 		threshold: threshold,
 		state:     CircuitStateClosed,
-		mu:        make(chan struct{}, 1), // Buffered channel used as mutex lock
+		mu:        make(chan struct{}, 1), // capacity-1 channel used as a mutex
 	}
 }
 
@@ -167,7 +166,7 @@ func (cb *CircuitBreaker) beforeAttempt() error {
 
 	switch cb.state {
 	case CircuitStateOpen:
-		// Check if should attempt recovery
+		// Probe for recovery once the open period (30s) has elapsed.
 		if time.Since(cb.lastFailure) > 30*time.Second {
 			cb.state = CircuitStateHalfOpen
 			log.Infof("Circuit breaker transitioning to half-open state")
@@ -175,11 +174,8 @@ func (cb *CircuitBreaker) beforeAttempt() error {
 			return fmt.Errorf("circuit breaker is open")
 		}
 	case CircuitStateHalfOpen:
-		// Half-open state, allow one attempt
 		log.Infof("Circuit breaker in half-open state, allowing one attempt")
 	case CircuitStateClosed:
-		// Closed state: allow normal operation
-		// No state change needed here
 	default:
 		return fmt.Errorf("invalid circuit breaker state: %v", cb.state)
 	}
@@ -235,9 +231,7 @@ func (cb *CircuitBreaker) recordFailure() {
 	cb.lastFailure = now
 	cb.pruneLocked(now)
 
-	// Calculate failure rate over the rolling window.
 	failureRate := cb.failureRateLocked()
-
 	if cb.state == CircuitStateClosed && failureRate >= cb.threshold {
 		cb.state = CircuitStateOpen
 		log.Warnf("Circuit breaker opened: failure rate %.2f >= threshold %.2f",
@@ -254,7 +248,7 @@ func (cb *CircuitBreaker) recordSuccess() {
 	cb.pruneLocked(time.Now())
 
 	if cb.state == CircuitStateHalfOpen {
-		// Success in half-open state, reset to closed state
+		// A successful half-open probe closes the breaker and clears the window.
 		cb.state = CircuitStateClosed
 		cb.resetCounters()
 		log.Infof("Circuit breaker closed after successful attempt")
@@ -267,7 +261,7 @@ func (cb *CircuitBreaker) resetCounters() {
 	cb.successes = nil
 }
 
-// GetState gets circuit breaker state
+// GetState returns the current breaker state.
 func (cb *CircuitBreaker) GetState() CircuitState {
 	cb.mu <- struct{}{}
 	defer func() { <-cb.mu }()
@@ -283,7 +277,7 @@ func (cb *CircuitBreaker) GetFailureRate() float64 {
 	return cb.failureRateLocked()
 }
 
-// ForceOpen forces circuit breaker to open
+// ForceOpen trips the breaker open regardless of the current failure rate.
 func (cb *CircuitBreaker) ForceOpen() {
 	cb.mu <- struct{}{}
 	defer func() { <-cb.mu }()
@@ -292,7 +286,7 @@ func (cb *CircuitBreaker) ForceOpen() {
 	log.Warnf("Circuit breaker forced open")
 }
 
-// ForceClose forces circuit breaker to close
+// ForceClose resets the breaker to closed and clears the failure window.
 func (cb *CircuitBreaker) ForceClose() {
 	cb.mu <- struct{}{}
 	defer func() { <-cb.mu }()

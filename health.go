@@ -23,7 +23,6 @@ func (p *PlugApollo) CheckHealth() error {
 		return NewInitError("Apollo client is nil")
 	}
 
-	// Perform actual health check of the Apollo configuration center
 	return p.checkApolloHealth()
 }
 
@@ -37,7 +36,6 @@ func (p *PlugApollo) checkApolloHealth() error {
 	circuitBreaker := p.circuitBreaker
 	p.mu.RUnlock()
 
-	// Record the start of the health check
 	success := false
 	if metrics != nil {
 		metrics.RecordHealthCheck("start")

@@ -13,7 +13,9 @@ import (
 	"time"
 )
 
-// ApolloHTTPClient represents an HTTP client for Apollo configuration center
+// ApolloHTTPClient talks to Apollo's HTTP config/notification API. It resolves
+// the config server address from the meta server once and caches it. Safe for
+// concurrent use: configServer is guarded by mu and closed is atomic.
 type ApolloHTTPClient struct {
 	metaServer   string
 	appId        string
@@ -21,12 +23,12 @@ type ApolloHTTPClient struct {
 	namespace    string
 	token        string
 	httpClient   *http.Client
-	configServer string // Cached config server address
+	configServer string // resolved config server address, cached after first lookup
 	mu           sync.RWMutex
 	closed       int32
 }
 
-// ApolloConfigResponse represents Apollo configuration response
+// ApolloConfigResponse is the payload returned by the configs endpoint.
 type ApolloConfigResponse struct {
 	AppId          string            `json:"appId"`
 	Cluster        string            `json:"cluster"`
@@ -35,7 +37,7 @@ type ApolloConfigResponse struct {
 	ReleaseKey     string            `json:"releaseKey"`
 }
 
-// ApolloNotificationResponse represents Apollo notification response
+// ApolloNotificationResponse is one entry from the long-poll notifications endpoint.
 type ApolloNotificationResponse struct {
 	NamespaceName  string `json:"namespaceName"`
 	NotificationId int64  `json:"notificationId"`
@@ -59,7 +61,8 @@ func NewApolloHTTPClient(metaServer, appId, cluster, namespace, token string, ti
 	}
 }
 
-// getConfigServer gets the config server address from meta server
+// getConfigServer returns the cached config server address, resolving it from
+// the meta server on first call.
 func (c *ApolloHTTPClient) getConfigServer(ctx context.Context) (string, error) {
 	if atomic.LoadInt32(&c.closed) == 1 {
 		return "", fmt.Errorf("apollo HTTP client is closed")
@@ -127,14 +130,14 @@ func (c *ApolloHTTPClient) getConfigServer(ctx context.Context) (string, error) 
 	return configServer, nil
 }
 
-// getClientIP gets the client IP address
+// getClientIP returns the client IP used for grey-release routing. Empty means
+// Apollo falls back to the request's source IP.
 func (c *ApolloHTTPClient) getClientIP() string {
-	// Try to get local IP, fallback to empty string
-	// Apollo server will use the request IP if empty
 	return ""
 }
 
-// GetConfig gets configuration from Apollo
+// GetConfig fetches the full configuration for a namespace. A 404 is treated as
+// an empty namespace rather than an error.
 func (c *ApolloHTTPClient) GetConfig(ctx context.Context, namespace string) (*ApolloConfigResponse, error) {
 	if atomic.LoadInt32(&c.closed) == 1 {
 		return nil, fmt.Errorf("apollo HTTP client is closed")
@@ -144,7 +147,6 @@ func (c *ApolloHTTPClient) GetConfig(ctx context.Context, namespace string) (*Ap
 		return nil, fmt.Errorf("failed to get config server: %w", err)
 	}
 
-	// Build request URL
 	configURL := fmt.Sprintf("%s/configs/%s/%s/%s", configServer, c.appId, c.cluster, namespace)
 	if c.token != "" {
 		configURL += "?token=" + url.QueryEscape(c.token)
@@ -166,7 +168,6 @@ func (c *ApolloHTTPClient) GetConfig(ctx context.Context, namespace string) (*Ap
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		// Namespace not found, return empty config
 		return &ApolloConfigResponse{
 			AppId:          c.appId,
 			Cluster:        c.cluster,
@@ -189,7 +190,7 @@ func (c *ApolloHTTPClient) GetConfig(ctx context.Context, namespace string) (*Ap
 	return &configResp, nil
 }
 
-// GetConfigValue gets a specific configuration value
+// GetConfigValue returns a single key's value, erroring if the key is absent.
 func (c *ApolloHTTPClient) GetConfigValue(ctx context.Context, namespace, key string) (string, error) {
 	config, err := c.GetConfig(ctx, namespace)
 	if err != nil {
@@ -214,7 +215,6 @@ func (c *ApolloHTTPClient) WatchNotifications(ctx context.Context, namespace str
 		return nil, fmt.Errorf("failed to get config server: %w", err)
 	}
 
-	// Build notification URL
 	notification := fmt.Sprintf(`{"namespaceName":"%s","notificationId":%d}`, namespace, notificationId)
 	notificationURL := fmt.Sprintf("%s/notifications/v2?appId=%s&cluster=%s&notifications=%s",
 		configServer, c.appId, c.cluster, url.QueryEscape(notification))
@@ -223,7 +223,6 @@ func (c *ApolloHTTPClient) WatchNotifications(ctx context.Context, namespace str
 		notificationURL += "&token=" + url.QueryEscape(c.token)
 	}
 
-	// Create request with timeout
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

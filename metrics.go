@@ -264,4 +264,3 @@ func (m *Metrics) RecordCacheMiss(namespace string) {
 	}
 	m.cacheMissesTotal.WithLabelValues(namespace).Inc()
 }
-

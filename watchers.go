@@ -35,7 +35,7 @@ type ConfigWatcher struct {
 	stopOnce      sync.Once
 }
 
-// NewConfigWatcher creates a new configuration watcher
+// NewConfigWatcher returns an unstarted watcher for the given namespace.
 func NewConfigWatcher(namespace string) *ConfigWatcher {
 	return &ConfigWatcher{
 		namespace: namespace,
@@ -156,7 +156,9 @@ func (w *ConfigWatcher) Stop() {
 	})
 }
 
-// WatchConfig watches configuration changes
+// WatchConfig returns the watcher for a namespace, creating and starting one if
+// none exists. Concurrent callers for the same namespace share a single watcher
+// (deduplicated under watcherMutex).
 func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 	if !p.IsInitialized() {
 		return nil, NewInitError("Apollo plugin not initialized")
@@ -168,7 +170,6 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 	metrics := p.metrics
 	p.mu.RUnlock()
 
-	// Record configuration watch operation metrics
 	if metrics != nil {
 		metrics.RecordConfigOperation(namespace, "watch", "start")
 		defer func() {
@@ -178,7 +179,7 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 
 	log.Infof("Watching config - Namespace: %s", namespace)
 
-	// Check if the configuration is already being watched
+	// Fast path: return the existing watcher without taking the write lock.
 	p.watcherMutex.RLock()
 	if existingWatcher, exists := p.configWatchers[namespace]; exists {
 		p.watcherMutex.RUnlock()
@@ -187,18 +188,15 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 	}
 	p.watcherMutex.RUnlock()
 
-	// Create configuration watcher backed by a real ApolloConfigWatcher.
-	// Snapshot the shared client under the lock so a concurrent shutdown
-	// cannot race it.
+	// Snapshot the client under the lock so a concurrent shutdown cannot race it.
 	p.mu.RLock()
 	client := p.client
 	p.mu.RUnlock()
 
 	watcher := NewConfigWatcher(namespace)
-	watcher.metrics = metrics // Pass metrics reference
-	watcher.client = client   // Back the watcher with the real Apollo client
+	watcher.metrics = metrics
+	watcher.client = client
 
-	// Set event handling callbacks
 	watcher.SetOnConfigChanged(func(ns string, key string, value string) {
 		p.handleConfigChanged(ns, key, value)
 	})
@@ -207,7 +205,8 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 		p.handleConfigWatchError(namespace, err)
 	})
 
-	// Register watcher
+	// Re-check under the write lock to resolve a race with another caller that
+	// registered the same namespace between the fast path and here.
 	p.watcherMutex.Lock()
 	if existingWatcher, exists := p.configWatchers[namespace]; exists {
 		p.watcherMutex.Unlock()
@@ -225,7 +224,8 @@ func (p *PlugApollo) WatchConfig(namespace string) (*ConfigWatcher, error) {
 	return watcher, nil
 }
 
-// handleConfigChanged handles configuration change events
+// handleConfigChanged records the change metric and evicts the stale cache entry
+// so the next read re-fetches from Apollo.
 func (p *PlugApollo) handleConfigChanged(namespace, key, value string) {
 	log.Infof("Config changed - Namespace: [%s], Key: [%s]", namespace, key)
 
@@ -244,7 +244,8 @@ func (p *PlugApollo) handleConfigChanged(namespace, key, value string) {
 	p.cacheMutex.Unlock()
 }
 
-// handleConfigWatchError handles configuration watch errors
+// handleConfigWatchError records the error and, when retry is enabled, schedules
+// a watcher rebuild in the background.
 func (p *PlugApollo) handleConfigWatchError(namespace string, err error) {
 	log.Errorf("Config watch error - Namespace: [%s], Error: %v", namespace, err)
 

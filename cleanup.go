@@ -7,16 +7,14 @@ import (
 	"github.com/go-lynx/lynx/log"
 )
 
-// stopHealthCheck stops health check
-// Uses sync.Once to ensure the channel is closed only once, preventing panic
+// stopHealthCheck closes the health-check channel. sync.Once guards against a
+// double-close panic if cleanup runs more than once.
 func (p *PlugApollo) stopHealthCheck() {
 	p.mu.Lock()
 	ch := p.healthCheckCh
 	p.mu.Unlock()
 
 	if ch != nil {
-		// Use sync.Once to ensure close() is only called once
-		// This prevents panic if stopHealthCheck() is called multiple times
 		p.healthCheckCloseOnce.Do(func() {
 			close(ch)
 			p.mu.Lock()
@@ -27,11 +25,10 @@ func (p *PlugApollo) stopHealthCheck() {
 	}
 }
 
-// cleanupWatchers cleans up watchers
+// cleanupWatchers stops every registered config watcher and resets the map.
 func (p *PlugApollo) cleanupWatchers() {
 	log.Infof("Cleaning up watchers")
 
-	// Clean up configuration watchers
 	p.watcherMutex.Lock()
 	configWatcherCount := len(p.configWatchers)
 	for configKey, watcher := range p.configWatchers {
@@ -59,7 +56,6 @@ func (p *PlugApollo) closeClientConnection() {
 	if client != nil {
 		log.Infof("Closing Apollo HTTP client connection")
 
-		// Get client information
 		clientInfo := map[string]any{
 			"client_type": "ApolloHTTPClient",
 		}
@@ -69,24 +65,23 @@ func (p *PlugApollo) closeClientConnection() {
 			clientInfo["namespace"] = p.conf.Namespace
 		}
 
-		// Close HTTP client
 		client.Close()
 
 		log.Infof("Apollo HTTP client connection closed: %+v", clientInfo)
 	}
 }
 
-// releaseMemoryResources releases memory resources
+// releaseMemoryResources nils out the resilience components and clears the
+// config cache during shutdown.
 func (p *PlugApollo) releaseMemoryResources() {
 	log.Infof("Releasing memory resources")
 
-	// Clear configuration
 	if p.conf != nil {
 		log.Infof("Clearing configuration")
-		// Don't set to nil, just clear sensitive fields if needed
+		// Kept non-nil; clear sensitive fields here if that becomes necessary.
 	}
 
-	// Clear enhanced components.  These fields are read concurrently by
+	// These fields are read concurrently by
 	// CheckHealth/GetConfigValue, so swap them to nil under p.mu to avoid a
 	// data race and nil dereference during shutdown.  ForceClose() is called on
 	// the local reference outside the lock.
@@ -110,13 +105,12 @@ func (p *PlugApollo) releaseMemoryResources() {
 		circuitBreaker.ForceClose()
 	}
 
-	// Clear cache
 	p.clearConfigCache()
 
 	log.Infof("Memory resources released")
 }
 
-// clearConfigCache clears configuration cache
+// clearConfigCache replaces the config cache with an empty map. Concurrency-safe via cacheMutex.
 func (p *PlugApollo) clearConfigCache() {
 	p.cacheMutex.Lock()
 	defer p.cacheMutex.Unlock()
@@ -138,23 +132,19 @@ func (p *PlugApollo) stopBackgroundTasks() {
 	p.metrics = nil
 	p.mu.Unlock()
 
-	// Stop retry tasks
 	if retryManager != nil {
 		log.Infof("Stopping retry manager background tasks")
 	}
 
-	// Stop circuit breaker tasks
 	if circuitBreaker != nil {
 		log.Infof("Stopping circuit breaker background tasks")
 		circuitBreaker.ForceClose()
 	}
 
-	// Stop metrics collection tasks
 	if metrics != nil {
 		log.Infof("Stopping metrics collection tasks")
 	}
 
-	// Stop other background tasks
 	log.Infof("Stopping health check tasks")
 	log.Infof("Stopping monitoring tasks")
 	log.Infof("Stopping audit log tasks")
@@ -162,7 +152,7 @@ func (p *PlugApollo) stopBackgroundTasks() {
 	log.Infof("Background tasks stopped")
 }
 
-// getCleanupStats gets cleanup statistics
+// getCleanupStats snapshots which resources have been released, for diagnostics.
 func (p *PlugApollo) getCleanupStats() map[string]any {
 	p.mu.RLock()
 	clientNil := p.client == nil
@@ -188,7 +178,9 @@ func (p *PlugApollo) getCleanupStats() map[string]any {
 	return stats
 }
 
-// CleanupTasks cleanup tasks
+// CleanupTasks tears the plugin down in dependency order: health check,
+// watchers, client connection, in-memory resources, then background tasks. The
+// CompareAndSwap on destroyed makes it idempotent under concurrent shutdown.
 func (p *PlugApollo) CleanupTasks() error {
 	if !p.IsInitialized() {
 		return nil
@@ -198,7 +190,6 @@ func (p *PlugApollo) CleanupTasks() error {
 		return nil
 	}
 
-	// Record cleanup operation metrics
 	if p.metrics != nil {
 		p.metrics.RecordClientOperation("cleanup", "start")
 		defer func() {

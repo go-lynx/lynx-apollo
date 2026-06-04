@@ -16,68 +16,55 @@ import (
 	"github.com/go-lynx/lynx/plugins"
 )
 
-// Plugin metadata
-// Plugin metadata defining basic plugin information
 const (
-	// pluginName is the unique identifier for the Apollo configuration center plugin, used to identify this plugin in the plugin system.
-	pluginName = "apollo.config.center"
-
-	// pluginVersion represents the current version of the Apollo configuration center plugin.
-	pluginVersion = "v1.6.1"
-
-	// pluginDescription briefly describes the functionality of the Apollo configuration center plugin.
+	pluginName        = "apollo.config.center"
+	pluginVersion     = "v1.6.1"
 	pluginDescription = "apollo configuration center plugin for lynx framework"
-
-	// confPrefix is the configuration prefix used when loading Apollo configuration.
+	// confPrefix is the config key prefix under which this plugin's settings are read.
 	confPrefix = "lynx.apollo"
 )
 
-// PlugApollo represents an Apollo configuration center plugin instance
+// PlugApollo is the Apollo configuration center plugin instance.
 type PlugApollo struct {
 	*plugins.BasePlugin
 	conf *conf.Apollo
 	rt   plugins.Runtime
 
-	// Apollo HTTP client
 	client *ApolloHTTPClient
 
-	// Enhanced components
 	metrics        *Metrics
 	retryManager   *RetryManager
 	circuitBreaker *CircuitBreaker
 
-	// State management - using atomic operations to improve concurrency safety
+	// initialized/destroyed are int32 so they can be read without holding mu
+	// (via atomic) from health checks and config reads running concurrently
+	// with startup/shutdown.
 	mu                   sync.RWMutex
-	initialized          int32 // Use int32 instead of bool to support atomic operations
-	destroyed            int32 // Use int32 instead of bool to support atomic operations
+	initialized          int32
+	destroyed            int32
 	healthCheckCh        chan struct{}
-	healthCheckCloseOnce sync.Once // Protect against multiple close operations
+	healthCheckCloseOnce sync.Once // guards close(healthCheckCh) against double-close
 
-	// Configuration watchers
+	// configWatchers maps namespace -> watcher; guarded by watcherMutex.
 	configWatchers map[string]*ConfigWatcher
-	watcherMutex   sync.RWMutex // Watcher mutex
+	watcherMutex   sync.RWMutex
 
-	// Cache system
-	configCache map[string]any // Configuration cache
-	cacheMutex  sync.RWMutex           // Cache mutex
+	// configCache caches resolved values keyed by "namespace:key"; guarded by cacheMutex.
+	configCache map[string]any
+	cacheMutex  sync.RWMutex
 }
 
-// NewApolloConfigCenter creates a new Apollo configuration center.
-// This function initializes the plugin's basic information and returns a pointer to PlugApollo.
+// NewApolloConfigCenter returns a PlugApollo with its base metadata set.
+// Weight is math.MaxInt so the config center loads before plugins that depend
+// on it for configuration.
 func NewApolloConfigCenter() *PlugApollo {
 	return &PlugApollo{
 		BasePlugin: plugins.NewBasePlugin(
-			// Generate unique plugin ID
 			plugins.GeneratePluginID("", pluginName, pluginVersion),
-			// Plugin name
 			pluginName,
-			// Plugin description
 			pluginDescription,
-			// Plugin version
 			pluginVersion,
-			// Configuration prefix
 			confPrefix,
-			// Weight
 			math.MaxInt,
 		),
 		healthCheckCh:  make(chan struct{}),
@@ -86,8 +73,8 @@ func NewApolloConfigCenter() *PlugApollo {
 	}
 }
 
-// InitializeResources implements custom initialization logic for the Apollo plugin.
-// This function loads and validates Apollo configuration, using default configuration if none is provided.
+// InitializeResources loads, defaults, and validates Apollo configuration and
+// builds the resilience components (metrics, retry, circuit breaker).
 func (p *PlugApollo) InitializeResources(rt plugins.Runtime) error {
 	if err := p.BasePlugin.InitializeResources(rt); err != nil {
 		return err
@@ -95,24 +82,18 @@ func (p *PlugApollo) InitializeResources(rt plugins.Runtime) error {
 	p.rt = rt
 	atomic.StoreInt32(&p.destroyed, 0)
 
-	// Initialize an empty configuration structure
 	p.conf = &conf.Apollo{}
-
-	// Scan and load Apollo configuration from runtime configuration
 	err := rt.GetConfig().Value(confPrefix).Scan(p.conf)
 	if err != nil {
 		return WrapInitError(err, "failed to scan apollo configuration")
 	}
 
-	// Set default configuration
 	p.setDefaultConfig()
 
-	// Validate configuration
 	if err := p.validateConfig(); err != nil {
 		return WrapInitError(err, "configuration validation failed")
 	}
 
-	// Initialize enhanced components
 	if err := p.initComponents(); err != nil {
 		return WrapInitError(err, "failed to initialize components")
 	}
@@ -120,38 +101,33 @@ func (p *PlugApollo) InitializeResources(rt plugins.Runtime) error {
 	return nil
 }
 
-// setDefaultConfig sets default configuration
+// setDefaultConfig fills unset fields with the package defaults (cluster
+// "default", namespace "application", 10s request timeout, 30s notification
+// long-poll timeout, etc.) so validation runs against complete config.
 func (p *PlugApollo) setDefaultConfig() {
 	if p.conf == nil {
 		return
 	}
-	// Default cluster is 'default'
 	if p.conf.Cluster == "" {
 		p.conf.Cluster = conf.DefaultCluster
 	}
-	// Default namespace is 'application'
 	if p.conf.Namespace == "" {
 		p.conf.Namespace = conf.DefaultNamespace
 	}
-	// Default timeout is 10 seconds
 	if p.conf.Timeout == nil {
 		p.conf.Timeout = conf.GetDefaultTimeout()
 	}
-	// Default notification timeout is 30 seconds
 	if p.conf.NotificationTimeout == nil {
 		p.conf.NotificationTimeout = conf.GetDefaultNotificationTimeout()
 	}
-	// Default cache directory
 	if p.conf.CacheDir == "" {
 		p.conf.CacheDir = conf.DefaultCacheDir
 	}
-	// Default circuit breaker threshold keeps validation aligned with runtime defaults.
 	if p.conf.CircuitBreakerThreshold == 0 {
 		p.conf.CircuitBreakerThreshold = conf.DefaultCircuitBreakerThreshold
 	}
 }
 
-// validateConfig validates configuration
 func (p *PlugApollo) validateConfig() error {
 	if p.conf == nil {
 		return NewConfigError("configuration is required")
@@ -166,12 +142,11 @@ func (p *PlugApollo) validateConfig() error {
 	return nil
 }
 
-// initComponents initializes enhanced components
+// initComponents builds the metrics, retry manager, and circuit breaker,
+// honouring configured overrides and falling back to package defaults.
 func (p *PlugApollo) initComponents() error {
-	// Initialize monitoring metrics
 	p.metrics = NewApolloMetrics()
 
-	// Initialize retry manager
 	maxRetries := int(conf.DefaultMaxRetryTimes)
 	if p.conf != nil && p.conf.MaxRetryTimes > 0 {
 		maxRetries = int(p.conf.MaxRetryTimes)
@@ -182,7 +157,6 @@ func (p *PlugApollo) initComponents() error {
 	}
 	p.retryManager = NewRetryManager(maxRetries, retryInterval)
 
-	// Initialize circuit breaker
 	threshold := conf.DefaultCircuitBreakerThreshold
 	if p.conf != nil && p.conf.CircuitBreakerThreshold > 0 {
 		threshold = float64(p.conf.CircuitBreakerThreshold)
@@ -192,7 +166,8 @@ func (p *PlugApollo) initComponents() error {
 	return nil
 }
 
-// checkInitialized unified state checking method ensuring thread safety
+// checkInitialized returns an error unless the plugin is initialized and not
+// yet destroyed. Safe to call concurrently (reads atomic state).
 func (p *PlugApollo) checkInitialized() error {
 	if atomic.LoadInt32(&p.initialized) == 0 {
 		return NewInitError("Apollo plugin not initialized")
@@ -203,7 +178,6 @@ func (p *PlugApollo) checkInitialized() error {
 	return nil
 }
 
-// setInitialized atomically sets initialization status
 func (p *PlugApollo) setInitialized() {
 	atomic.StoreInt32(&p.initialized, 1)
 }
@@ -212,7 +186,6 @@ func (p *PlugApollo) clearInitialized() {
 	atomic.StoreInt32(&p.initialized, 0)
 }
 
-// setDestroyed atomically sets destruction status
 func (p *PlugApollo) setDestroyed() {
 	atomic.StoreInt32(&p.destroyed, 1)
 }
@@ -258,8 +231,10 @@ func (p *PlugApollo) publishRuntimeResources() error {
 	return nil
 }
 
-// StartupTasks implements custom startup logic for the Apollo plugin.
-// This function configures and starts the Apollo configuration center, adding necessary middleware and configuration options.
+// StartupTasks builds the Apollo client, registers this plugin as the Lynx
+// control plane, publishes runtime resources, and loads dependent plugins from
+// the control-plane config. On any failure it rolls back the client and the
+// initialized flag so the plugin is left in a clean uninitialized state.
 func (p *PlugApollo) StartupTasks() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -272,7 +247,6 @@ func (p *PlugApollo) StartupTasks() error {
 	}
 
 	started := false
-	// Record startup operation metrics
 	if p.metrics != nil {
 		p.metrics.RecordClientOperation("startup", "start")
 		defer func() {
@@ -282,10 +256,8 @@ func (p *PlugApollo) StartupTasks() error {
 		}()
 	}
 
-	// Use Lynx application Helper to log Apollo plugin initialization information.
 	log.Infof("Initializing apollo plugin with app_id: %s, cluster: %s, namespace: %s", p.conf.AppId, p.conf.Cluster, p.conf.Namespace)
 
-	// Initialize Apollo client
 	client, err := p.initApolloClient()
 	if err != nil {
 		log.Errorf("Failed to initialize Apollo client: %v", err)
@@ -295,10 +267,10 @@ func (p *PlugApollo) StartupTasks() error {
 		return WrapInitError(err, "failed to initialize Apollo client")
 	}
 
-	// Save client instance
 	p.client = client
 	p.setInitialized()
 
+	// Roll back the client and initialized flag if startup does not reach the end.
 	defer func() {
 		if started {
 			return
@@ -310,7 +282,6 @@ func (p *PlugApollo) StartupTasks() error {
 		}
 	}()
 
-	// Set the Apollo configuration center as the Lynx application's control plane.
 	err = lynx.Lynx().SetControlPlane(p)
 	if err != nil {
 		log.Errorf("Failed to set control plane: %v", err)
@@ -320,7 +291,6 @@ func (p *PlugApollo) StartupTasks() error {
 		return WrapInitError(err, "failed to set control plane")
 	}
 
-	// Get the Lynx application's control plane startup configuration.
 	cfg, err := lynx.Lynx().InitControlPlaneConfig()
 	if err != nil {
 		log.Errorf("Failed to init control plane config: %v", err)
@@ -338,7 +308,6 @@ func (p *PlugApollo) StartupTasks() error {
 		return WrapInitError(err, "failed to publish runtime resources")
 	}
 
-	// Load plugins from the plugin list.
 	if err := lynx.Lynx().GetPluginManager().LoadPlugins(cfg); err != nil {
 		log.Errorf("Failed to load dependent plugins from Apollo config: %v", err)
 		if p.metrics != nil {
@@ -352,7 +321,8 @@ func (p *PlugApollo) StartupTasks() error {
 	return nil
 }
 
-// initApolloClient initializes Apollo HTTP client
+// initApolloClient builds the Apollo HTTP client. MetaServer and AppId are
+// required; cluster, namespace, and timeout fall back to defaults.
 func (p *PlugApollo) initApolloClient() (*ApolloHTTPClient, error) {
 	if p.conf.MetaServer == "" {
 		return nil, fmt.Errorf("meta server address is required")
@@ -361,7 +331,6 @@ func (p *PlugApollo) initApolloClient() (*ApolloHTTPClient, error) {
 		return nil, fmt.Errorf("app ID is required")
 	}
 
-	// Set defaults
 	cluster := p.conf.Cluster
 	if cluster == "" {
 		cluster = conf.DefaultCluster
@@ -372,13 +341,11 @@ func (p *PlugApollo) initApolloClient() (*ApolloHTTPClient, error) {
 		namespace = conf.DefaultNamespace
 	}
 
-	// Get timeout
 	timeout := 10 * time.Second
 	if p.conf.Timeout != nil {
 		timeout = p.conf.Timeout.AsDuration()
 	}
 
-	// Create HTTP client
 	client := NewApolloHTTPClient(
 		p.conf.MetaServer,
 		p.conf.AppId,
@@ -403,22 +370,22 @@ func (p *PlugApollo) GetMetrics() *Metrics {
 	return p.metrics
 }
 
-// IsInitialized checks if initialized
+// IsInitialized reports whether startup completed. Safe for concurrent use.
 func (p *PlugApollo) IsInitialized() bool {
 	return atomic.LoadInt32(&p.initialized) == 1
 }
 
-// IsDestroyed checks if destroyed
+// IsDestroyed reports whether cleanup has run. Safe for concurrent use.
 func (p *PlugApollo) IsDestroyed() bool {
 	return atomic.LoadInt32(&p.destroyed) == 1
 }
 
-// GetApolloConfig gets Apollo configuration
+// GetApolloConfig returns the resolved plugin configuration.
 func (p *PlugApollo) GetApolloConfig() *conf.Apollo {
 	return p.conf
 }
 
-// GetNamespace returns the namespace
+// GetNamespace returns the configured namespace, or the package default if unset.
 func (p *PlugApollo) GetNamespace() string {
 	if p.conf != nil {
 		return p.conf.Namespace

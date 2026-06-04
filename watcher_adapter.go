@@ -12,7 +12,9 @@ import (
 	"github.com/go-lynx/lynx/log"
 )
 
-// ApolloConfigWatcher implements config.Watcher interface for Apollo
+// ApolloConfigWatcher implements config.Watcher by driving Apollo's long-poll
+// notification API in a background goroutine and delivering reloaded key/values
+// over notifyCh.
 type ApolloConfigWatcher struct {
 	client              *ApolloHTTPClient
 	namespace           string
@@ -47,7 +49,8 @@ func NewApolloConfigWatcher(client *ApolloHTTPClient, namespace string) *ApolloC
 	}
 }
 
-// Next returns the next configuration change
+// Next blocks until the next configuration change arrives, or returns an error
+// once the watcher is stopped.
 func (w *ApolloConfigWatcher) Next() ([]*config.KeyValue, error) {
 	if atomic.LoadInt32(&w.closed) == 1 {
 		return nil, fmt.Errorf("watcher stopped")
@@ -63,7 +66,8 @@ func (w *ApolloConfigWatcher) Next() ([]*config.KeyValue, error) {
 	}
 }
 
-// Stop stops the watcher
+// Stop cancels the watch context, signals the loop to exit, and waits for the
+// goroutine to drain. Idempotent via stopOnce.
 func (w *ApolloConfigWatcher) Stop() error {
 	w.stopOnce.Do(func() {
 		atomic.StoreInt32(&w.closed, 1)
@@ -128,7 +132,6 @@ func (w *ApolloConfigWatcher) watchLoop() {
 			notificationId := w.notificationId
 			w.mu.RUnlock()
 
-			// Watch for notifications using long polling
 			notifications, err := w.client.WatchNotifications(watchCtx, w.namespace, notificationId, w.notificationTimeout)
 			if err != nil {
 				if errors.Is(watchCtx.Err(), context.Canceled) {
@@ -136,7 +139,8 @@ func (w *ApolloConfigWatcher) watchLoop() {
 					return
 				}
 				log.Errorf("Failed to watch Apollo notifications for namespace %s: %v", w.namespace, err)
-				// Wait a bit before retrying
+				// Back off briefly before re-polling so a persistent error does
+				// not spin the loop.
 				select {
 				case <-w.stopCh:
 					return
@@ -145,16 +149,15 @@ func (w *ApolloConfigWatcher) watchLoop() {
 				}
 			}
 
-			// Process notifications
 			if len(notifications) > 0 {
 				for _, notification := range notifications {
 					if notification.NamespaceName == w.namespace {
-						// Update notification ID
+						// Advance the notification ID so the next long poll only
+						// returns changes newer than this one.
 						w.mu.Lock()
 						w.notificationId = notification.NotificationId
 						w.mu.Unlock()
 
-						// Reload configuration
 						configResp, err := w.client.GetConfig(watchCtx, w.namespace)
 						if err != nil {
 							if errors.Is(watchCtx.Err(), context.Canceled) {
@@ -164,7 +167,6 @@ func (w *ApolloConfigWatcher) watchLoop() {
 							continue
 						}
 
-						// Convert to KeyValue list
 						var kvs []*config.KeyValue
 						for key, value := range configResp.Configurations {
 							kvs = append(kvs, &config.KeyValue{
@@ -173,7 +175,6 @@ func (w *ApolloConfigWatcher) watchLoop() {
 							})
 						}
 
-						// Send notification
 						select {
 						case <-w.stopCh:
 							return

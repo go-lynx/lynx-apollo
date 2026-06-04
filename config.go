@@ -10,11 +10,9 @@ import (
 	"github.com/go-lynx/lynx/log"
 )
 
-// ConfigAdapter configuration adapter
-// Responsibility: provide Apollo configuration center related functionality
-
-// GetConfig gets configuration from Apollo configuration center
-// This method retrieves the corresponding configuration source from Apollo configuration center based on the provided namespace
+// GetConfig returns a config.Source for a single namespace. Apollo addresses
+// config by app_id+cluster+namespace, so fileName is treated as the namespace
+// and group is ignored. An empty fileName falls back to the configured namespace.
 func (p *PlugApollo) GetConfig(fileName string, group string) (config.Source, error) {
 	if err := p.checkInitialized(); err != nil {
 		return nil, err
@@ -29,8 +27,6 @@ func (p *PlugApollo) GetConfig(fileName string, group string) (config.Source, er
 		return nil, NewInitError("Apollo client is nil")
 	}
 
-	// For Apollo, namespace is used instead of fileName/group
-	// fileName is treated as namespace, group is ignored (Apollo uses app_id + cluster + namespace)
 	namespace := fileName
 	if namespace == "" {
 		namespace = p.conf.Namespace
@@ -38,14 +34,13 @@ func (p *PlugApollo) GetConfig(fileName string, group string) (config.Source, er
 
 	log.Infof("Getting config from Apollo - Namespace: [%s]", namespace)
 
-	// Create Apollo config source
 	source := NewApolloConfigSource(client, p.conf.AppId, p.conf.Cluster, namespace)
 
 	return source, nil
 }
 
-// GetConfigSources gets all configuration sources for multi-config loading
-// This method implements the MultiConfigControlPlane interface
+// GetConfigSources returns the main namespace source plus any additional
+// namespace sources, implementing the MultiConfigControlPlane interface.
 func (p *PlugApollo) GetConfigSources() ([]config.Source, error) {
 	if err := p.checkInitialized(); err != nil {
 		return nil, err
@@ -53,7 +48,6 @@ func (p *PlugApollo) GetConfigSources() ([]config.Source, error) {
 
 	var sources []config.Source
 
-	// Get main configuration source
 	mainSource, err := p.getMainConfigSource()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get main config source: %w", err)
@@ -62,7 +56,6 @@ func (p *PlugApollo) GetConfigSources() ([]config.Source, error) {
 		sources = append(sources, mainSource)
 	}
 
-	// Get additional configuration sources
 	additionalSources, err := p.getAdditionalConfigSources()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get additional config sources: %w", err)
@@ -155,10 +148,8 @@ func (p *PlugApollo) getMainConfigSource() (config.Source, error) {
 		return p.GetConfig(namespace, "")
 	}
 
-	// Use service_config configuration
 	serviceConfig := p.conf.ServiceConfig
 
-	// Determine namespace
 	namespace := serviceConfig.Namespace
 	if namespace == "" {
 		namespace = p.conf.Namespace
@@ -220,7 +211,6 @@ func (p *PlugApollo) GetConfigValue(namespace, key string) (string, error) {
 	metrics := p.metrics
 	p.mu.RUnlock()
 
-	// Record configuration operation metrics
 	success := false
 	if metrics != nil {
 		metrics.RecordConfigOperation(namespace, "get", "start")
@@ -248,7 +238,6 @@ func (p *PlugApollo) GetConfigValue(namespace, key string) (string, error) {
 
 	err := retryManager.DoWithRetry(func() error {
 		return circuitBreaker.Do(func() error {
-			// Call Apollo client to get configuration
 			val, err := p.getConfigValueFromApollo(context.Background(), namespace, key)
 			if err != nil {
 				lastErr = err
@@ -305,13 +294,11 @@ func (p *PlugApollo) getConfigValueFromApollo(ctx context.Context, namespace, ke
 		}
 	}
 
-	// Get from Apollo
 	value, err := client.GetConfigValue(ctx, namespace, key)
 	if err != nil {
 		return "", err
 	}
 
-	// Cache the value if enabled
 	if p.conf.EnableCache {
 		cacheKey := fmt.Sprintf("%s:%s", namespace, key)
 		p.cacheMutex.Lock()
@@ -327,7 +314,7 @@ func (p *PlugApollo) getConfigValueFromApollo(ctx context.Context, namespace, ke
 
 // ApolloConfigSource implements config.Source for Apollo
 type ApolloConfigSource struct {
-	client    *ApolloHTTPClient // Apollo HTTP client
+	client    *ApolloHTTPClient
 	appId     string
 	cluster   string
 	namespace string
