@@ -394,8 +394,12 @@ func (p *PlugApollo) initApolloClient() (*ApolloHTTPClient, error) {
 	return client, nil
 }
 
-// GetMetrics gets monitoring metrics
+// GetMetrics gets monitoring metrics.
+// Snapshot under the lock so a concurrent shutdown (which nils p.metrics)
+// cannot cause a data race.
 func (p *PlugApollo) GetMetrics() *Metrics {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.metrics
 }
 

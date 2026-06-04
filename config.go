@@ -19,7 +19,13 @@ func (p *PlugApollo) GetConfig(fileName string, group string) (config.Source, er
 	if err := p.checkInitialized(); err != nil {
 		return nil, err
 	}
-	if p.client == nil {
+
+	// Snapshot the client under the lock so a concurrent shutdown cannot race
+	// or nil it out from under us.
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
 		return nil, NewInitError("Apollo client is nil")
 	}
 
@@ -33,7 +39,7 @@ func (p *PlugApollo) GetConfig(fileName string, group string) (config.Source, er
 	log.Infof("Getting config from Apollo - Namespace: [%s]", namespace)
 
 	// Create Apollo config source
-	source := NewApolloConfigSource(p.client, p.conf.AppId, p.conf.Cluster, namespace)
+	source := NewApolloConfigSource(client, p.conf.AppId, p.conf.Cluster, namespace)
 
 	return source, nil
 }
@@ -121,10 +127,13 @@ func (p *PlugApollo) WatchControlPlaneConfig(ctx context.Context, target lynx.Co
 	if err := p.checkInitialized(); err != nil {
 		return nil, err
 	}
-	if p.client == nil {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
 		return nil, NewInitError("Apollo client is nil")
 	}
-	watcher := NewApolloConfigWatcher(p.client, target.FileName)
+	watcher := NewApolloConfigWatcher(client, target.FileName)
 	if err := lynx.StartControlPlaneWatcher(ctx, watcher); err != nil {
 		_ = watcher.Stop()
 		return nil, err
@@ -202,28 +211,45 @@ func (p *PlugApollo) GetConfigValue(namespace, key string) (string, error) {
 		return "", err
 	}
 
+	// Snapshot the shared resilience components and metrics under the lock so
+	// concurrent shutdown (which may nil them) cannot cause a data race or nil
+	// dereference.
+	p.mu.RLock()
+	circuitBreaker := p.circuitBreaker
+	retryManager := p.retryManager
+	metrics := p.metrics
+	p.mu.RUnlock()
+
 	// Record configuration operation metrics
 	success := false
-	if p.metrics != nil {
-		p.metrics.RecordConfigOperation(namespace, "get", "start")
+	if metrics != nil {
+		metrics.RecordConfigOperation(namespace, "get", "start")
 		defer func() {
-			if p.metrics != nil && success {
-				p.metrics.RecordConfigOperation(namespace, "get", "success")
+			if success {
+				metrics.RecordConfigOperation(namespace, "get", "success")
 			}
 		}()
 	}
 
 	log.Infof("Getting config value - Namespace: [%s], Key: [%s]", namespace, key)
 
-	// Execute with circuit breaker and retry mechanism
+	if circuitBreaker == nil || retryManager == nil {
+		return "", NewInitError("Apollo resilience components are not initialized")
+	}
+
+	// Execute with circuit breaker and retry mechanism.
+	//
+	// The retry loop wraps the circuit breaker so that the breaker only gates a
+	// single attempt; backoff sleeps happen between breaker calls rather than
+	// while the breaker lock is held. This keeps config reads from serialising
+	// behind one another.
 	var value string
 	var lastErr error
 
-	err := p.circuitBreaker.Do(func() error {
-		return p.retryManager.DoWithRetry(func() error {
+	err := retryManager.DoWithRetry(func() error {
+		return circuitBreaker.Do(func() error {
 			// Call Apollo client to get configuration
-			// This is a placeholder - actual implementation depends on Apollo SDK
-			val, err := p.getConfigValueFromApollo(namespace, key)
+			val, err := p.getConfigValueFromApollo(context.Background(), namespace, key)
 			if err != nil {
 				lastErr = err
 				return err
@@ -235,8 +261,8 @@ func (p *PlugApollo) GetConfigValue(namespace, key string) (string, error) {
 
 	if err != nil {
 		log.Errorf("Failed to get config value %s:%s after retries: %v", namespace, key, err)
-		if p.metrics != nil {
-			p.metrics.RecordConfigOperation(namespace, "get", "error")
+		if metrics != nil {
+			metrics.RecordConfigOperation(namespace, "get", "error")
 		}
 		return "", WrapClientError(lastErr, ErrCodeConfigGetFailed, "failed to get config value")
 	}
@@ -246,9 +272,17 @@ func (p *PlugApollo) GetConfigValue(namespace, key string) (string, error) {
 	return value, nil
 }
 
-// getConfigValueFromApollo gets configuration value from Apollo client
-func (p *PlugApollo) getConfigValueFromApollo(namespace, key string) (string, error) {
-	if p.client == nil {
+// getConfigValueFromApollo gets configuration value from Apollo client.
+// The supplied context is propagated to the underlying HTTP request so the
+// call honours caller deadlines and shutdown cancellation.
+func (p *PlugApollo) getConfigValueFromApollo(ctx context.Context, namespace, key string) (string, error) {
+	// Snapshot the client under the lock so a concurrent shutdown (which nils
+	// p.client) cannot cause a data race or nil dereference.
+	p.mu.RLock()
+	client := p.client
+	metrics := p.metrics
+	p.mu.RUnlock()
+	if client == nil {
 		return "", fmt.Errorf("Apollo client not initialized")
 	}
 
@@ -259,21 +293,20 @@ func (p *PlugApollo) getConfigValueFromApollo(namespace, key string) (string, er
 		if cached, exists := p.configCache[cacheKey]; exists {
 			if value, ok := cached.(string); ok {
 				p.cacheMutex.RUnlock()
-				if p.metrics != nil {
-					p.metrics.RecordCacheHit(p.GetNamespace())
+				if metrics != nil {
+					metrics.RecordCacheHit(p.GetNamespace())
 				}
 				return value, nil
 			}
 		}
 		p.cacheMutex.RUnlock()
-		if p.metrics != nil {
-			p.metrics.RecordCacheMiss(p.GetNamespace())
+		if metrics != nil {
+			metrics.RecordCacheMiss(p.GetNamespace())
 		}
 	}
 
 	// Get from Apollo
-	ctx := context.Background()
-	value, err := p.client.GetConfigValue(ctx, namespace, key)
+	value, err := client.GetConfigValue(ctx, namespace, key)
 	if err != nil {
 		return "", err
 	}
@@ -298,6 +331,11 @@ type ApolloConfigSource struct {
 	appId     string
 	cluster   string
 	namespace string
+	// ctx is the base context used for Load/Watch operations.  The Kratos
+	// config.Source interface methods do not accept a context, so callers that
+	// want shutdown/deadline propagation set it via WithContext.  When unset it
+	// defaults to context.Background().
+	ctx context.Context
 }
 
 // NewApolloConfigSource creates a new Apollo config source
@@ -307,7 +345,26 @@ func NewApolloConfigSource(client *ApolloHTTPClient, appId, cluster, namespace s
 		appId:     appId,
 		cluster:   cluster,
 		namespace: namespace,
+		ctx:       context.Background(),
 	}
+}
+
+// WithContext returns the source configured to use ctx as the base context for
+// Load and Watch operations, so the caller's deadline/cancellation propagates
+// into the underlying HTTP requests.
+func (s *ApolloConfigSource) WithContext(ctx context.Context) *ApolloConfigSource {
+	if ctx != nil {
+		s.ctx = ctx
+	}
+	return s
+}
+
+// context returns the source's base context, defaulting to background.
+func (s *ApolloConfigSource) context() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
 }
 
 // Load implements config.Source interface
@@ -315,8 +372,7 @@ func (s *ApolloConfigSource) Load() ([]*config.KeyValue, error) {
 	if s.client == nil {
 		return nil, fmt.Errorf("apollo HTTP client is nil")
 	}
-	ctx := context.Background()
-	configResp, err := s.client.GetConfig(ctx, s.namespace)
+	configResp, err := s.client.GetConfig(s.context(), s.namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config from Apollo: %w", err)
 	}
@@ -333,14 +389,15 @@ func (s *ApolloConfigSource) Load() ([]*config.KeyValue, error) {
 }
 
 // Watch implements config.Source.Watch.  Because the Kratos interface does not
-// accept a context, context.Background() is used internally.  Callers are
-// responsible for calling watcher.Stop() when the source is no longer needed.
+// accept a context, the source's base context (background unless set via
+// WithContext) is used to drive the watcher.  Callers are responsible for
+// calling watcher.Stop() when the source is no longer needed.
 func (s *ApolloConfigSource) Watch() (config.Watcher, error) {
 	if s.client == nil {
 		return nil, fmt.Errorf("apollo HTTP client is nil")
 	}
 	watcher := NewApolloConfigWatcher(s.client, s.namespace)
-	if err := watcher.Start(context.Background()); err != nil {
+	if err := watcher.Start(s.context()); err != nil {
 		return nil, err
 	}
 	return watcher, nil
