@@ -18,7 +18,7 @@ import (
 
 const (
 	pluginName        = "apollo.config.center"
-	pluginVersion     = "v1.6.1"
+	pluginVersion     = "v1.6.3"
 	pluginDescription = "apollo configuration center plugin for lynx framework"
 	// confPrefix is the config key prefix under which this plugin's settings are read.
 	confPrefix = "lynx.apollo"
