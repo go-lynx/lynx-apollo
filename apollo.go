@@ -4,6 +4,7 @@
 package apollo
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sync"
@@ -231,94 +232,10 @@ func (p *PlugApollo) publishRuntimeResources() error {
 	return nil
 }
 
-// StartupTasks builds the Apollo client, registers this plugin as the Lynx
-// control plane, publishes runtime resources, and loads dependent plugins from
-// the control-plane config. On any failure it rolls back the client and the
-// initialized flag so the plugin is left in a clean uninitialized state.
+// StartupTasks is the legacy (non-context) startup hook. It delegates to the
+// context-aware implementation with a background context.
 func (p *PlugApollo) StartupTasks() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if atomic.LoadInt32(&p.initialized) == 1 {
-		return NewInitError("Apollo plugin already initialized")
-	}
-	if p.conf == nil {
-		return NewConfigError("configuration is required")
-	}
-
-	started := false
-	if p.metrics != nil {
-		p.metrics.RecordClientOperation("startup", "start")
-		defer func() {
-			if started && p.metrics != nil {
-				p.metrics.RecordClientOperation("startup", "success")
-			}
-		}()
-	}
-
-	log.Infof("Initializing apollo plugin with app_id: %s, cluster: %s, namespace: %s", p.conf.AppId, p.conf.Cluster, p.conf.Namespace)
-
-	client, err := p.initApolloClient()
-	if err != nil {
-		log.Errorf("Failed to initialize Apollo client: %v", err)
-		if p.metrics != nil {
-			p.metrics.RecordClientOperation("startup", "error")
-		}
-		return WrapInitError(err, "failed to initialize Apollo client")
-	}
-
-	p.client = client
-	p.setInitialized()
-
-	// Roll back the client and initialized flag if startup does not reach the end.
-	defer func() {
-		if started {
-			return
-		}
-		p.clearInitialized()
-		if p.client != nil {
-			p.client.Close()
-			p.client = nil
-		}
-	}()
-
-	err = lynx.Lynx().SetControlPlane(p)
-	if err != nil {
-		log.Errorf("Failed to set control plane: %v", err)
-		if p.metrics != nil {
-			p.metrics.RecordClientOperation("startup", "error")
-		}
-		return WrapInitError(err, "failed to set control plane")
-	}
-
-	cfg, err := lynx.Lynx().InitControlPlaneConfig()
-	if err != nil {
-		log.Errorf("Failed to init control plane config: %v", err)
-		if p.metrics != nil {
-			p.metrics.RecordClientOperation("startup", "error")
-		}
-		return WrapInitError(err, "failed to init control plane config")
-	}
-
-	if err := p.publishRuntimeResources(); err != nil {
-		log.Errorf("Failed to publish Apollo runtime resources: %v", err)
-		if p.metrics != nil {
-			p.metrics.RecordClientOperation("startup", "error")
-		}
-		return WrapInitError(err, "failed to publish runtime resources")
-	}
-
-	if err := lynx.Lynx().GetPluginManager().LoadPlugins(cfg); err != nil {
-		log.Errorf("Failed to load dependent plugins from Apollo config: %v", err)
-		if p.metrics != nil {
-			p.metrics.RecordClientOperation("startup", "error")
-		}
-		return WrapInitError(err, "failed to load dependent plugins")
-	}
-
-	started = true
-	log.Infof("Apollo plugin initialized successfully")
-	return nil
+	return p.startupTasksContext(context.Background())
 }
 
 // initApolloClient builds the Apollo HTTP client. MetaServer and AppId are

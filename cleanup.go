@@ -1,7 +1,7 @@
 package apollo
 
 import (
-	"sync/atomic"
+	"context"
 	"time"
 
 	"github.com/go-lynx/lynx/log"
@@ -178,45 +178,8 @@ func (p *PlugApollo) getCleanupStats() map[string]any {
 	return stats
 }
 
-// CleanupTasks tears the plugin down in dependency order: health check,
-// watchers, client connection, in-memory resources, then background tasks. The
-// CompareAndSwap on destroyed makes it idempotent under concurrent shutdown.
+// CleanupTasks is the legacy (non-context) cleanup hook. It delegates to the
+// context-aware implementation with a background context.
 func (p *PlugApollo) CleanupTasks() error {
-	if !p.IsInitialized() {
-		return nil
-	}
-
-	if !atomic.CompareAndSwapInt32(&p.destroyed, 0, 1) {
-		return nil
-	}
-
-	if p.metrics != nil {
-		p.metrics.RecordClientOperation("cleanup", "start")
-		defer func() {
-			if p.metrics != nil {
-				p.metrics.RecordClientOperation("cleanup", "success")
-			}
-		}()
-	}
-
-	log.Infof("Destroying Apollo plugin")
-
-	// 1. Stop health check
-	p.stopHealthCheck()
-
-	// 2. Clean up watchers
-	p.cleanupWatchers()
-
-	// 3. Close client connection
-	p.closeClientConnection()
-
-	// 4. Release memory resources
-	p.releaseMemoryResources()
-
-	// 5. Stop background tasks
-	p.stopBackgroundTasks()
-
-	p.clearInitialized()
-	log.Infof("Apollo plugin destroyed successfully")
-	return nil
+	return p.cleanupTasksContext(context.Background())
 }
